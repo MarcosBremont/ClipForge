@@ -1,7 +1,7 @@
 {
   "name": "clipforge",
   "productName": "ClipForge",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Editor automatico de videos verticales (9:16) para TikTok, Reels y Shorts. Procesamiento 100% local.",
   "author": "ClipForge",
   "type": "commonjs",
