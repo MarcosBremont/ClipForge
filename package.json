@@ -1,0 +1,110 @@
+{
+  "name": "clipforge",
+  "productName": "ClipForge",
+  "version": "1.0.0",
+  "description": "Editor automatico de videos verticales (9:16) para TikTok, Reels y Shorts. Procesamiento 100% local.",
+  "author": "ClipForge",
+  "type": "commonjs",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node tests/run.mjs",
+    "test:e2e": "node tests/e2e.mjs",
+    "test:playback": "node tests/e2e.mjs playback",
+    "dist:win": "electron-vite build && electron-builder --win",
+    "dist:mac": "electron-vite build && electron-builder --mac",
+    "release:win": "electron-vite build && electron-builder --win --publish always",
+    "pack": "electron-vite build && electron-builder --dir"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "zustand": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "electron": "^45.3.3",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "allowScripts": {
+    "ffmpeg-static@5.3.0": true
+  },
+  "build": {
+    "appId": "com.clipforge.app",
+    "productName": "ClipForge",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "MarcosBremont",
+        "repo": "ClipForge",
+        "releaseType": "release"
+      }
+    ],
+    "files": [
+      "out/**",
+      "package.json",
+      "!node_modules/ffprobe-static/bin/{darwin,linux}/**",
+      "!node_modules/**/*.{md,map,ts}"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "node_modules/ffprobe-static/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "ClipForge-Setup-${version}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.video",
+      "files": [
+        "!node_modules/ffprobe-static/bin/win32/**",
+        "!node_modules/ffprobe-static/bin/linux/**",
+        "node_modules/ffprobe-static/bin/darwin/**"
+      ]
+    }
+  }
+}
