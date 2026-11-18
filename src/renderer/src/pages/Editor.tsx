@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Library, VideoAsset } from '@shared/types'
+import { DEFAULT_TEXT_STYLE, type Library, type VideoAsset } from '@shared/types'
 import * as E from '@shared/editor'
 import { api, errMsg, fmtTime, mediaUrl, type EditorRow } from '../api'
 import { useEditor } from '../editorStore'
@@ -58,9 +58,40 @@ function Inspector(): React.JSX.Element {
   const clip = sel?.kind === 'clip' ? project.clips.find((c) => c.id === sel.id) : undefined
   const text = sel?.kind === 'text' ? project.texts.find((t) => t.id === sel.id) : undefined
 
+  const audio = sel?.kind === 'audio' ? (project.audios ?? []).find((a) => a.id === sel.id) : undefined
+  const slider = (label: string, key: string, value: number, min: number, max: number, step: number, fmt: (v: number) => string, patch: (v: number) => (p: E.EditorProject) => E.EditorProject): React.JSX.Element => (
+    <label className="f"><span>{label}: <b>{fmt(value)}</b></span>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => edit(key, patch(Number(e.target.value)))} /></label>
+  )
+
+  if (audio) {
+    return (
+      <div className="col">
+        <h3>{audio.kind === 'voice' ? 'Voz' : 'Audio'}</h3>
+        <div className="small muted">{audio.name}<br />Suena una vez desde el instante indicado. Arrastra su borde derecho para acortarlo.</div>
+        <div className="grid g2">
+          <label className="f"><span>Empieza (s)</span><input type="number" min={0} step={0.1} value={Math.round(audio.start * 100) / 100} onChange={(e) => edit('as' + audio.id, (p) => E.moveAudio(p, audio.id, Number(e.target.value)))} /></label>
+          <label className="f"><span>Dura (s)</span><input type="number" min={0.2} step={0.1} value={Math.round(audio.duration * 100) / 100} onChange={(e) => edit('ad' + audio.id, (p) => E.setAudio(p, audio.id, { duration: Number(e.target.value) }))} /></label>
+        </div>
+        {slider('Volumen', 'av' + audio.id, audio.volume, 0, 1, 0.01, (v) => Math.round(v * 100) + '%', (v) => (p) => E.setAudio(p, audio.id, { volume: v }))}
+        {slider('Fundido de entrada', 'afi' + audio.id, audio.fadeIn, 0, 3, 0.1, (v) => v.toFixed(1) + ' s', (v) => (p) => E.setAudio(p, audio.id, { fadeIn: v }))}
+        {slider('Fundido de salida', 'afo' + audio.id, audio.fadeOut, 0, 3, 0.1, (v) => v.toFixed(1) + ' s', (v) => (p) => E.setAudio(p, audio.id, { fadeOut: v }))}
+        <div className="row wrap">
+          <button className="btn sm" onClick={() => seek(audio.start)}>⏮ Ir al inicio</button>
+          <button className="btn sm danger" onClick={() => { apply((p) => E.removeAudio(p, audio.id)); select(null) }}>🗑 Eliminar</button>
+        </div>
+      </div>
+    )
+  }
+
   if (clip) {
     const v = videos[clip.videoId]
     const start = E.clipStarts(project)[project.clips.indexOf(clip)]
+    const idx = project.clips.indexOf(clip)
+    const look = E.clipLook(clip)
+    const FILTER_NAMES: Array<[string, string]> = [['none', 'Original'], ['vivid', 'Vívido'], ['warm', 'Cálido'], ['cool', 'Frío'], ['bw', 'B/N'], ['vintage', 'Vintage'], ['dramatic', 'Dramático']]
+    const setC = (k: keyof E.ClipLook, key: string) => (v: number) => (p: E.EditorProject) => E.setClip(p, clip.id, { [k]: v })
+    const tr = (j: number): number => E.transitionAt(project, j)
     return (
       <div className="col">
         <h3>Clip</h3>
@@ -78,7 +109,27 @@ function Inspector(): React.JSX.Element {
           <button className="btn sm" onClick={() => { const r = E.duplicateClip(project, clip.id); if (r) { apply(() => r.project); select({ kind: 'clip', id: r.selectId }) } }}>⧉ Duplicar</button>
           <button className="btn sm danger" onClick={() => apply((p) => E.removeClip(p, clip.id))}>🗑 Eliminar</button>
         </div>
-        <div className="muted small">Arrastra los bordes del clip en la línea de tiempo para recortar, y el centro para cambiar su orden.</div>
+        <h4 style={{ margin: '10px 0 0' }}>Filtros</h4>
+        <div className="chips">{FILTER_NAMES.map(([k, n]) => <span key={k} className={'chip' + ((clip.filter ?? 'none') === k ? ' on' : '')} onClick={() => apply((p) => E.applyFilter(p, clip.id, k))}>{n}</span>)}</div>
+        {slider('Brillo', 'br' + clip.id, look.bright, -0.5, 0.5, 0.01, (v) => (v >= 0 ? '+' : '') + Math.round(v * 100), setC('bright', 'br'))}
+        {slider('Contraste', 'co' + clip.id, look.contrast, 0.5, 1.5, 0.01, (v) => Math.round(v * 100) + '%', setC('contrast', 'co'))}
+        {slider('Saturación', 'sa' + clip.id, look.sat, 0, 2, 0.01, (v) => Math.round(v * 100) + '%', setC('sat', 'sa'))}
+        {slider('Calidez', 'wa' + clip.id, look.warmth, -1, 1, 0.01, (v) => (v >= 0 ? '+' : '') + Math.round(v * 100), setC('warmth', 'wa'))}
+        <h4 style={{ margin: '10px 0 0' }}>Encuadre</h4>
+        {slider('Zoom', 'sc' + clip.id, look.scale, 0.25, 4, 0.01, (v) => v.toFixed(2) + '×', setC('scale', 'sc'))}
+        {slider('Giro', 'ro' + clip.id, look.rot, -180, 180, 1, (v) => Math.round(v) + '°', setC('rot', 'ro'))}
+        {slider('Posición horizontal', 'px' + clip.id, look.px, -1, 1, 0.01, (v) => Math.round(v * 100) + '%', setC('px', 'px'))}
+        {slider('Posición vertical', 'py' + clip.id, look.py, -1, 1, 0.01, (v) => Math.round(v * 100) + '%', setC('py', 'py'))}
+        <div className="row wrap">
+          <button className={'btn sm' + (look.flip ? ' primary' : '')} onClick={() => apply((p) => E.setClip(p, clip.id, { flip: !look.flip }))}>⇋ Espejo</button>
+          <button className="btn sm" onClick={() => apply((p) => E.setClip(p, clip.id, { scale: 1, rot: 0, flip: false, px: 0, py: 0 }))}>Restablecer encuadre</button>
+        </div>
+        <h4 style={{ margin: '10px 0 0' }}>Fundidos y transiciones</h4>
+        {slider('Entrada (desde negro)', 'fi' + clip.id, look.fadeIn, 0, 3, 0.1, (v) => v.toFixed(1) + ' s', setC('fadeIn', 'fi'))}
+        {slider('Salida (hacia negro)', 'fo' + clip.id, look.fadeOut, 0, 3, 0.1, (v) => v.toFixed(1) + ' s', setC('fadeOut', 'fo'))}
+        {idx < project.clips.length - 1 && <div className="row wrap"><span className="small muted">Con el clip siguiente:</span>
+          {[0, 0.3, 0.6, 1].map((d) => <span key={d} className={'chip' + (Math.abs(tr(idx) - d) < 0.01 ? ' on' : '')} onClick={() => apply((p) => E.setTransition(p, idx, d))}>{d === 0 ? 'Ninguna' : d + ' s'}</span>)}</div>}
+        <div className="muted small">Las transiciones son fundidos a negro entre clips (también en la unión «+» de la línea de tiempo). Arrastra los bordes del clip para recortar y el centro para cambiar su orden.</div>
       </div>
     )
   }
@@ -147,6 +198,7 @@ export default function Editor(): React.JSX.Element {
   const canRedo = useEditor((s) => s.future.length > 0)
   const [projects, setProjects] = useState<EditorRow[] | null>(null)
   const [exporting, setExporting] = useState(false)
+  const [cap, setCap] = useState<{ text: string; words: number; fromHere: boolean } | null>(null)
   const total = E.totalDuration(project)
 
   const split = useCallback((): void => {
@@ -161,6 +213,7 @@ export default function Editor(): React.JSX.Element {
     if (st.sel?.kind === 'clip') st.apply((p) => E.removeClip(p, st.sel!.id))
     else if (st.sel?.kind === 'text') st.apply((p) => E.removeText(p, st.sel!.id))
     else if (st.sel?.kind === 'music') st.apply((p) => ({ ...p, music: null }))
+    else if (st.sel?.kind === 'audio') st.apply((p) => E.removeAudio(p, st.sel!.id))
   }, [])
 
   const addText = useCallback((): void => {
@@ -183,6 +236,32 @@ export default function Editor(): React.JSX.Element {
     const name = path.split(/[\\/]/).pop() ?? 'música'
     useEditor.getState().apply((p) => ({ ...p, music: { path, name, volume: 0.8 } }))
     useEditor.getState().select({ kind: 'music', id: 'music' })
+  }
+
+  const createCaptions = (): void => {
+    const st = useEditor.getState()
+    if (!cap) return
+    if (!st.project.clips.length) { notify('Primero agrega un video a la línea de tiempo.', 'err'); return }
+    const last = st.project.texts[st.project.texts.length - 1]
+    const base = last?.style
+    const style = { ...(base ?? DEFAULT_TEXT_STYLE), x: 0.5, y: 0.78, fontSize: Math.min(base?.fontSize ?? 64, 64) }
+    const r = E.captionsFromText(st.project, cap.text, style, { from: cap.fromHere ? st.playhead : 0, maxWords: cap.words })
+    if (!r.ids.length) { notify('Escribe el guion de los subtítulos.', 'err'); return }
+    st.apply(() => r.project); st.select({ kind: 'text', id: r.ids[0] })
+    setCap(null)
+    notify('Subtítulos agregados: se ven y se editan como textos.')
+  }
+
+  const pickAudio = async (kind: 'sfx' | 'voice'): Promise<void> => {
+    const path = await api.pickMusic()
+    if (!path) return
+    const name = path.split(/[\\/]/).pop() ?? 'audio'
+    const st = useEditor.getState()
+    if (!st.project.clips.length) { notify('Primero agrega un video a la línea de tiempo.', 'err'); return }
+    // Duración real del archivo para que la pista ocupe solo lo que dura.
+    const fileDur = await new Promise<number>((res) => { const a = new Audio(mediaUrl(path)); a.onloadedmetadata = () => res(isFinite(a.duration) ? a.duration : 0); a.onerror = () => res(0); setTimeout(() => res(0), 4000) })
+    const r = E.addAudio(st.project, path, name, kind, st.playhead, fileDur)
+    st.apply(() => r.project); st.select({ kind: 'audio', id: r.selectId })
   }
 
   // Atajos de teclado (no se activan escribiendo en un campo)
@@ -230,8 +309,9 @@ export default function Editor(): React.JSX.Element {
         .filter((t): t is { png: Uint8Array; start: number; end: number } => !!t.png)
       await api.editorExport({
         name: p.name || 'editor', fps: p.fps, quality: p.quality, texts,
-        clips: p.clips.map((c) => ({ videoId: c.videoId, srcStart: c.srcStart, srcEnd: c.srcEnd, speed: c.speed, volume: c.volume })),
-        music: p.music ? { path: p.music.path, volume: p.music.volume } : null
+        clips: p.clips.map((c) => ({ videoId: c.videoId, srcStart: c.srcStart, srcEnd: c.srcEnd, speed: c.speed, volume: c.volume, ...E.clipLook(c) })),
+        music: p.music ? { path: p.music.path, volume: p.music.volume } : null,
+        audios: (p.audios ?? []).map((a) => ({ path: a.path, start: a.start, duration: a.duration, volume: a.volume, fadeIn: a.fadeIn, fadeOut: a.fadeOut }))
       })
       notify('Exportando… el progreso aparece abajo a la derecha. El video quedará en «Videos generados».')
     } catch (e) { notify(errMsg(e), 'err') } finally { setExporting(false) }
@@ -256,7 +336,10 @@ export default function Editor(): React.JSX.Element {
         <MediaBin />
         <div className="row wrap" style={{ marginTop: 10 }}>
           <button className="btn sm" onClick={addText}>＋ Texto (T)</button>
-          <button className="btn sm" onClick={() => void pickMusic()}>♪ Música</button>
+          <button className="btn sm" title="Crear subtítulos a partir de un guion" onClick={() => setCap({ text: '', words: 4, fromHere: false })}>💬 Subtítulos</button>
+          <button className="btn sm" title="Música de fondo: suena en bucle durante todo el video" onClick={() => void pickMusic()}>♪ Música</button>
+          <button className="btn sm" title="Efecto de sonido o audio colocado en la cabeza de reproducción" onClick={() => void pickAudio('sfx')}>🔊 Audio</button>
+          <button className="btn sm" title="Pista de voz (archivo) colocada en la cabeza de reproducción" onClick={() => void pickAudio('voice')}>🎙 Voz</button>
         </div>
       </aside>
 
@@ -270,7 +353,7 @@ export default function Editor(): React.JSX.Element {
         <span className="edtime">{fmtTime(playhead)} / {fmtTime(total)}</span>
         <span className="edsep" />
         <button className="btn sm" title="Dividir en la cabeza de reproducción (S)" disabled={!project.clips.length} onClick={split}>✂ Dividir</button>
-        <button className="btn sm" title="Duplicar (Ctrl+D)" disabled={!sel || sel.kind === 'music'} onClick={duplicate}>⧉</button>
+        <button className="btn sm" title="Duplicar (Ctrl+D)" disabled={!sel || sel.kind === 'music' || sel.kind === 'audio'} onClick={duplicate}>⧉</button>
         <button className="btn sm danger" title="Eliminar (Supr)" disabled={!sel} onClick={remove}>🗑</button>
         <span className="edsep" />
         <button className="btn sm" title="Deshacer (Ctrl+Z)" disabled={!canUndo} onClick={() => useEditor.getState().undo()}>↶</button>
@@ -281,6 +364,23 @@ export default function Editor(): React.JSX.Element {
       </div>
 
       <div className="edbottom"><EditorTimeline /></div>
+
+      {cap && (
+        <div className="modal-bg" onClick={() => setCap(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ marginTop: 0 }}>Subtítulos</h2>
+            <div className="small muted" style={{ marginBottom: 8 }}>Pega o escribe lo que dice el video. Se parte en frases cortas y se reparte por la línea de tiempo según su longitud; después puedes mover o editar cada subtítulo como cualquier texto.</div>
+            <textarea id="capText" rows={6} value={cap.text} placeholder="Guion…" onChange={(e) => setCap({ ...cap, text: e.target.value })} />
+            <label className="f"><span>Palabras por subtítulo: <b>{cap.words}</b></span>
+              <input type="range" min={1} max={8} value={cap.words} onChange={(e) => setCap({ ...cap, words: Number(e.target.value) })} /></label>
+            <label className="row" style={{ gap: 8 }}><input type="checkbox" checked={cap.fromHere} onChange={(e) => setCap({ ...cap, fromHere: e.target.checked })} /> <span className="small">Empezar en la cabeza de reproducción</span></label>
+            <div className="row sp" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={() => setCap(null)}>Cancelar</button>
+              <button className="btn primary" id="capCreate" disabled={!cap.text.trim()} onClick={createCaptions}>Crear subtítulos</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {projects && (
         <div className="modal-bg" onClick={() => setProjects(null)}>

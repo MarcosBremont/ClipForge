@@ -111,3 +111,10 @@ table.t { width: 100%; border-collapse: collapse; } table.t td, table.t th { pad
 .edplayhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid #ff4d6d; z-index: 20; pointer-events: none; }
 .edplayhead i { position: absolute; top: 0; left: -7px; width: 12px; height: 12px; background: #ff4d6d; clip-path: polygon(0 0, 100% 0, 50% 100%); }
 kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 11px; }
+
+.edphone .edwarm { position: absolute; inset: 0; pointer-events: none; mix-blend-mode: soft-light; opacity: 0; z-index: 4; }
+.edaudio { position: absolute; height: 26px; border-radius: 7px; background: #5a3d12; border: 2px solid #b8812a; font-size: 12px; line-height: 22px; padding: 0 12px 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: grab; box-sizing: border-box; }
+.edaudio.on { border-color: #fff; }
+.edaudio .h { position: absolute; top: 0; bottom: 0; width: 9px; background: #ffffffcc; cursor: ew-resize; opacity: 0; right: 0; } .edaudio:hover .h, .edaudio.on .h { opacity: .9; }
+.edjoin { position: absolute; top: 20px; width: 20px; height: 20px; border-radius: 50%; border: 0; padding: 0; background: #ffffffdd; color: #111; font-size: 13px; line-height: 20px; cursor: pointer; z-index: 6; }
+.edjoin.on { background: var(--accent2); color: #fff; }

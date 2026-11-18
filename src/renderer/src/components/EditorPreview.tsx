@@ -20,6 +20,8 @@ export default function EditorPreview(): React.JSX.Element {
   const elA = useRef<HTMLVideoElement>(null)
   const elB = useRef<HTMLVideoElement>(null)
   const audio = useRef<HTMLAudioElement>(null)
+  const warm = useRef<HTMLDivElement>(null)
+  const extra = useRef(new Map<string, HTMLAudioElement>()) // pistas de audio extra (efectos, voz)
   const canvas = useRef<HTMLCanvasElement>(null)
   const stage = useRef<HTMLDivElement>(null)
   const active = useRef<HTMLVideoElement | null>(null)
@@ -112,6 +114,44 @@ export default function EditorPreview(): React.JSX.Element {
     } else au.pause()
   }, [])
 
+  /** Fundido (0..1) de un valor en el instante local lt de algo que dura d. */
+  const fadeAt = (lt: number, d: number, fi: number, fo: number): number => Math.max(0, Math.min(fi > 0 ? lt / fi : 1, fo > 0 ? (d - lt) / fo : 1, 1))
+
+  /** Sincroniza las pistas de audio extra con el reloj. `hard`: reposicionar (salto); si no, solo arrancar/parar. */
+  const syncExtra = useCallback((time: number, play: boolean, hard: boolean): void => {
+    const list = projectRef.current.audios ?? []
+    const map = extra.current
+    for (const [id, el] of map) if (!list.some((a) => a.id === id)) { el.pause(); map.delete(id) }
+    for (const a of list) {
+      let el = map.get(a.id)
+      if (!el) { el = new Audio(mediaUrl(a.path)); el.preload = 'auto'; map.set(a.id, el) }
+      const lt = time - a.start
+      const inside = lt >= 0 && lt < a.duration
+      el.volume = Math.max(0, Math.min(1, a.volume * (inside ? fadeAt(lt, a.duration, a.fadeIn, a.fadeOut) : 1)))
+      if (inside && play) {
+        if (hard || el.paused) { try { el.currentTime = lt } catch { /* nada */ } }
+        if (el.paused) void el.play().catch(() => undefined)
+      } else if (!el.paused) el.pause()
+    }
+  }, [])
+
+  /** Aspecto del clip visible (color, encuadre, fundido): se aplica cada fotograma sobre el <video> activo. */
+  const applyLook = useCallback((time: number): void => {
+    const p = projectRef.current
+    const el = active.current
+    const loc = E.locate(p, time)
+    if (!el || !loc) return
+    const c = p.clips[loc.index]
+    const l = E.clipLook(c)
+    const f = fadeAt(time - loc.start, E.clipDur(c), l.fadeIn, l.fadeOut)
+    el.style.filter = E.hasColor(c) ? `brightness(${1 + l.bright}) contrast(${l.contrast}) saturate(${l.sat})` : ''
+    el.style.transform = E.hasFrame(c) ? `translate(${l.px * 100}%, ${l.py * 100}%) rotate(${l.rot}deg) scale(${l.scale}) scaleX(${l.flip ? -1 : 1})` : ''
+    el.style.opacity = String(f)
+    el.volume = Math.max(0, Math.min(1, c.volume * f))
+    const w = warm.current
+    if (w) { w.style.background = l.warmth >= 0 ? '#ff8a00' : '#0a7bff'; w.style.opacity = String(Math.abs(l.warmth) * 0.18) }
+  }, [])
+
   const seek = useCallback((time: number, keepPlaying = playRef.current): void => {
     const p = projectRef.current
     const total = E.totalDuration(p)
@@ -121,11 +161,14 @@ export default function EditorPreview(): React.JSX.Element {
     if (!loc) { active.current?.pause(); return }
     showClip(loc.index, tt - loc.start, keepPlaying)
     syncAudio(tt, keepPlaying)
-  }, [showClip, syncAudio, setPlayhead])
+    syncExtra(tt, keepPlaying, true)
+    applyLook(tt)
+  }, [showClip, syncAudio, syncExtra, applyLook, setPlayhead])
 
   const pause = useCallback((): void => {
     playRef.current = false; setPlaying(false)
     active.current?.pause(); prepared.current?.el.pause(); audio.current?.pause()
+    for (const el of extra.current.values()) el.pause()
   }, [setPlaying])
   const play = useCallback((): void => {
     const p = projectRef.current
@@ -169,6 +212,7 @@ export default function EditorPreview(): React.JSX.Element {
       tRef.current = nt; setPlayhead(nt)
       const loc = E.locate(p, nt)
       if (!loc) return
+      syncExtra(nt, true, false)
       if (loc.index !== curIdx.current) showClip(loc.index, nt - loc.start, true)
       else {
         const el = active.current; const c = p.clips[loc.index]
@@ -178,7 +222,11 @@ export default function EditorPreview(): React.JSX.Element {
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [showClip, pause, setPlayhead])
+  }, [showClip, pause, setPlayhead, syncExtra])
+
+  // El aspecto (color, encuadre, fundido) se refresca al mover la cabeza o editar el proyecto.
+  useEffect(() => { applyLook(playhead); if (!playRef.current) syncExtra(playhead, false, false) }, [playhead, project, applyLook, syncExtra])
+  useEffect(() => () => { for (const el of extra.current.values()) el.pause(); extra.current.clear() }, [])
 
   // ---------- textos sobre la vista previa (mismo dibujado que la exportación) ----------
   const visible = useMemo(() => E.textsAt(project, playhead), [project, playhead])
@@ -230,6 +278,7 @@ export default function EditorPreview(): React.JSX.Element {
     <div className="edphone" ref={stage} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
       <video ref={elA} playsInline preload="auto" />
       <video ref={elB} playsInline preload="auto" className="hide" />
+      <div ref={warm} className="edwarm" />
       <canvas ref={canvas} />
       {!project.clips.length && <div className="edempty">Agrega videos de la biblioteca<br />para empezar a editar</div>}
       {box && <div className="edbox" style={{ left: `${(box.x / CANVAS_W) * 100}%`, top: `${(box.y / CANVAS_H) * 100}%`, width: `${(box.w / CANVAS_W) * 100}%`, height: `${(box.h / CANVAS_H) * 100}%` }} />}

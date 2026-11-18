@@ -148,4 +148,88 @@ class EditorModelTest {
         val s = com.clipforge.android.model.AppJson.encodeToString(EditorProject.serializer(), p)
         assertEquals(p, com.clipforge.android.model.AppJson.decodeFromString(EditorProject.serializer(), s))
     }
+
+    private fun one(d: Double = 10.0) = addClip(EditorProject(), 1, d)
+
+    @Test fun aspectoSeLimitaYClipLookDaValoresDeFabrica() {
+        var p = one()
+        val id = p.clips[0].id
+        val l0 = clipLook(p.clips[0])
+        assertEquals(1.0, l0.scale, 0.0); assertEquals(1.0, l0.contrast, 0.0); assertEquals(0.0, l0.rot, 0.0); assertFalse(l0.flip)
+        assertFalse(hasColor(p.clips[0])); assertFalse(hasFrame(p.clips[0]))
+        p = setClip(p, id, scale = 99.0, rot = 400.0, sat = -3.0, bright = 2.0, px = 5.0)
+        val l = clipLook(p.clips[0])
+        assertEquals(4.0, l.scale, 0.0); assertEquals(180.0, l.rot, 0.0); assertEquals(0.0, l.sat, 0.0); assertEquals(0.5, l.bright, 0.0); assertEquals(1.0, l.px, 0.0)
+        assertTrue(hasColor(p.clips[0])); assertTrue(hasFrame(p.clips[0]))
+    }
+
+    @Test fun fundidosNoPasanDeLaMitad() {
+        var p = one(1.0)
+        p = setClip(p, p.clips[0].id, fadeIn = 3.0, fadeOut = 3.0)
+        assertEquals(0.5, clipLook(p.clips[0]).fadeIn, 0.002); assertEquals(0.5, clipLook(p.clips[0]).fadeOut, 0.002)
+    }
+
+    @Test fun filtrosAjustanLosCuatroParametros() {
+        var p = one(5.0)
+        p = applyFilter(p, p.clips[0].id, "bw")
+        assertEquals("bw", p.clips[0].filter); assertEquals(0.0, p.clips[0].sat, 0.0)
+        p = applyFilter(p, p.clips[0].id, "none")
+        assertFalse(hasColor(p.clips[0]))
+        assertSame(p, applyFilter(p, p.clips[0].id, "inventado"))
+    }
+
+    @Test fun transicionAmbosLadosYCero() {
+        var p = addClip(addClip(EditorProject(), 1, 4.0), 2, 4.0)
+        p = setTransition(p, 0, 0.6)
+        assertEquals(0.6, transitionAt(p, 0), 0.002); assertEquals(0.6, p.clips[0].fadeOut, 0.002); assertEquals(0.6, p.clips[1].fadeIn, 0.002)
+        p = setTransition(p, 0, 0.0)
+        assertEquals(0.0, transitionAt(p, 0), 0.0)
+        assertSame(p, setTransition(p, 1, 1.0))
+    }
+
+    @Test fun audiosSeAgreganMuevenRecortanYQuitan() {
+        var p = one()
+        val r = addAudio(p, "content://a", "a", "sfx", 8.0, 5.0) // solo caben 2 s
+        p = r.project
+        assertEquals(8.0, p.audios[0].start, 0.002); assertEquals(2.0, p.audios[0].duration, 0.002)
+        p = moveAudio(p, r.selectId, 99.0); assertEquals(8.0, p.audios[0].start, 0.002)
+        p = moveAudio(p, r.selectId, 1.0); assertEquals(1.0, p.audios[0].start, 0.002)
+        p = setAudio(p, r.selectId, duration = 1.0, fadeIn = 5.0, volume = 3.0)
+        assertEquals(0.5, p.audios[0].fadeIn, 0.002); assertEquals(1.0, p.audios[0].volume, 0.0)
+        p = removeAudio(p, r.selectId); assertEquals(0, p.audios.size)
+    }
+
+    @Test fun normalizeRecortaAudiosYLosQuitaSiQuedaVacio() {
+        var p = one()
+        p = addAudio(p, "content://a", "a", "voice", 2.0).project // 2..10
+        p = trimClip(p, p.clips[0].id, false, 5.0, 10.0)
+        assertEquals(3.0, p.audios[0].duration, 0.002)
+        p = removeClip(p, p.clips[0].id)
+        assertEquals(0, p.audios.size)
+    }
+
+    @Test fun proyectosViejosSinAspectoNiAudiosSeAbren() {
+        val old = """{"id":0,"name":"x","clips":[{"id":"c1","videoId":1,"srcStart":0.0,"srcEnd":5.0}],"texts":[],"fps":30,"quality":"media"}"""
+        val p = com.clipforge.android.model.AppJson.decodeFromString(EditorProject.serializer(), old)
+        assertEquals(1.0, p.clips[0].scale, 0.0); assertEquals(0, p.audios.size)
+        val s = com.clipforge.android.model.AppJson.encodeToString(EditorProject.serializer(), setClip(p, "c1", scale = 2.0, filter = "warm"))
+        assertEquals(2.0, com.clipforge.android.model.AppJson.decodeFromString(EditorProject.serializer(), s).clips[0].scale, 0.0)
+    }
+
+    @Test fun splitCaptionsCortaPorPalabrasYPuntuacion() {
+        assertEquals(listOf("Hola mundo.", "Esto es una prueba", "de subtitulos largos para", "el video"), splitCaptions("Hola mundo. Esto es una prueba de subtitulos largos para el video", 4))
+        assertEquals(emptyList<String>(), splitCaptions("  ", 4))
+        assertEquals(listOf("uno"), splitCaptions("uno", 4))
+    }
+
+    @Test fun captionsRepartenSinHuecosNiSolapes() {
+        val p = addClip(EditorProject(), 1, 10.0)
+        val r = captionsFromText(p, "Primera frase corta. Segunda frase un poco mas larga que la primera. Tercera.", TextStyle(), 2.0, 8.0, 4)!!
+        val ts = r.project.texts
+        assertTrue(ts.size >= 3)
+        assertEquals(2.0, ts[0].start, 0.002)
+        for (i in 1 until ts.size) assertEquals(ts[i - 1].start + ts[i - 1].duration, ts[i].start, 0.003)
+        assertEquals(8.0, ts.last().start + ts.last().duration, 0.003)
+        assertNull(captionsFromText(EditorProject(), "hola", TextStyle()))
+    }
 }

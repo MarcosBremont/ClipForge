@@ -161,6 +161,23 @@ export async function runE2E(win: BrowserWindow, work: string): Promise<void> {
     await key(' ')
     check('Espacio reproduce y la cabeza de reproducción avanza', ph > 0.9, `playhead=${ph.toFixed(2)}`)
 
+    // Fase 1: filtros, transiciones, fundidos y pistas de audio desde la interfaz
+    await ed(`s.select({ kind: 'clip', id: p.clips[1].id })`); await sleep(300)
+    await js(`[...document.querySelectorAll('.edright .chip')].find((e) => e.textContent === 'B/N').click()`); await sleep(150)
+    check('el filtro B/N deja la saturación en 0', (await ed('p.clips[1].filter')) === 'bw' && (await ed('c.E.clipLook(p.clips[1]).sat')) === 0)
+    await js(`document.querySelector('.edjoin').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true }))`); await sleep(150)
+    check('el botón + de la unión crea una transición de 0,5 s', Math.abs((await ed('c.E.transitionAt(p, 0)')) - 0.5) < 0.01)
+    await ed(`s.apply((q) => c.E.setClip(q, q.clips[0].id, { scale: 1.5, rot: 10, fadeIn: 0.4 }))`); await sleep(150)
+    check('zoom, giro y fundido se guardan en el clip', (await ed('c.E.hasFrame(p.clips[0]) && c.E.clipLook(p.clips[0]).fadeIn > 0.39')) === true)
+    await ed(`(() => { const r = c.E.addAudio(p, 'C:/no-existe/efecto.mp3', 'efecto.mp3', 'sfx', 1, 2); s.apply(() => r.project); s.select({ kind: 'audio', id: r.selectId }) })()`); await sleep(300)
+    check('la pista de audio aparece en la línea de tiempo y su inspector', (await js<number>(`document.querySelectorAll('.edaudio').length`)) === 1)
+    await ed(`s.apply((q) => c.E.removeAudio(q, q.audios[0].id))`)
+    const nTexts0: number = await ed('p.texts.length')
+    await js(`[...document.querySelectorAll('.edleft button')].find((b) => b.textContent.includes('Subtítulos')).click()`); await sleep(200)
+    await js(`(() => { const ta = document.querySelector('#capText'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(ta, 'Hola a todos. Este es un subtitulo de prueba para el editor'); ta.dispatchEvent(new Event('input', { bubbles: true })) })()`); await sleep(200)
+    await js(`document.querySelector('#capCreate').click()`); await sleep(300)
+    check('el diálogo de subtítulos crea textos repartidos por el video', (await ed('p.texts.length')) >= nTexts0 + 3 && (await js<boolean>(`!document.querySelector('#capText')`)))
+
     // Exportar desde el botón y verificar el archivo
     const totalEd: number = await ed('c.E.totalDuration(p)')
     type RJ = { status: string; result?: { outputs: Array<{ path: string }> }; message?: string }

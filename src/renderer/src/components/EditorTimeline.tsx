@@ -34,6 +34,19 @@ export default function EditorTimeline(): React.JSX.Element {
     return { lane, count: Math.max(1, ends.length) }
   }, [project.texts])
 
+  // Carriles de audio extra
+  const audioLanes = useMemo(() => {
+    const ends: number[] = []
+    const lane = new Map<string, number>()
+    for (const a of [...(project.audios ?? [])].sort((x, y) => x.start - y.start)) {
+      let k = ends.findIndex((e) => e <= a.start + 1e-6)
+      if (k < 0) { k = ends.length; ends.push(0) }
+      ends[k] = a.start + a.duration
+      lane.set(a.id, k)
+    }
+    return { lane, count: Math.max(1, ends.length) }
+  }, [project.audios])
+
   const timeAt = (clientX: number): number => {
     const sc = scroller.current!
     return Math.max(0, (clientX - sc.getBoundingClientRect().left + sc.scrollLeft) / pps)
@@ -124,6 +137,29 @@ export default function EditorTimeline(): React.JSX.Element {
     }, () => useEditor.getState().beginGesture(), 3)
   }
 
+  const audioDown = (e: React.PointerEvent, a: E.EAudio): void => {
+    const st = useEditor.getState()
+    st.select({ kind: 'audio', id: a.id }); st.setPlaying(false)
+    gesture(e, (dx) => {
+      const s = useEditor.getState()
+      const v = E.snap(a.start + dx, E.snapPoints(s.project, s.playhead), 8 / s.pps)
+      s.live((p) => E.moveAudio(p, a.id, v))
+    }, () => useEditor.getState().beginGesture(), 3)
+  }
+  const audioEnd = (e: React.PointerEvent, a: E.EAudio): void => {
+    useEditor.getState().select({ kind: 'audio', id: a.id })
+    const base = a.start + a.duration
+    gesture(e, (dx) => {
+      const s = useEditor.getState()
+      const v = E.snap(base + dx, E.snapPoints(s.project, s.playhead), 8 / s.pps)
+      s.live((p) => E.setAudio(p, a.id, { duration: Math.max(E.MIN_AUDIO, v - a.start) }))
+    }, () => useEditor.getState().beginGesture())
+  }
+  const toggleJoin = (e: React.PointerEvent, i: number): void => {
+    e.stopPropagation()
+    useEditor.getState().apply((p) => E.setTransition(p, i, E.transitionAt(p, i) > 0 ? 0 : 0.5))
+  }
+
   const textEdge = (e: React.PointerEvent, t: E.EText, side: 'start' | 'end'): void => {
     useEditor.getState().select({ kind: 'text', id: t.id })
     const base = side === 'start' ? t.start : t.start + t.duration
@@ -137,6 +173,7 @@ export default function EditorTimeline(): React.JSX.Element {
   const ticks: number[] = []
   for (let t = 0; t <= width / pps; t += step) ticks.push(t)
   const textTrackH = lanes.count * 30 + 8
+  const audioTrackH = audioLanes.count * 30 + 8
 
   return (
     <div className="edtl">
@@ -145,6 +182,7 @@ export default function EditorTimeline(): React.JSX.Element {
         <div className="lbl" style={{ height: textTrackH }}>Texto</div>
         <div className="lbl" style={{ height: 64 }}>Video</div>
         <div className="lbl" style={{ height: 34 }}>Música</div>
+        <div className="lbl" style={{ height: audioTrackH }}>Audio</div>
       </div>
       <div className="edscroll" ref={scroller}>
         <div className="edcanvas" style={{ width }}>
@@ -179,6 +217,11 @@ export default function EditorTimeline(): React.JSX.Element {
                 </div>
               )
             })}
+            {project.clips.slice(0, -1).map((c, i) => {
+              const t = E.transitionAt(project, i)
+              return <button key={'j' + c.id} className={'edjoin' + (t > 0 ? ' on' : '')} title={t > 0 ? `Transición: fundido de ${t} s (clic para quitar)` : 'Agregar transición (fundido) entre estos clips'}
+                style={{ left: (starts[i] + E.clipDur(c)) * pps - 10 }} onPointerDown={(e) => toggleJoin(e, i)}>{t > 0 ? '◆' : '+'}</button>
+            })}
           </div>
 
           <div className="edtrack" style={{ height: 34 }} onPointerDown={scrub}>
@@ -186,6 +229,18 @@ export default function EditorTimeline(): React.JSX.Element {
               ? <div className={'edmusic' + (sel?.kind === 'music' ? ' on' : '')} style={{ left: 0, width: Math.max(30, total * pps) }}
                   onPointerDown={(e) => { e.stopPropagation(); useEditor.getState().select({ kind: 'music', id: 'music' }) }}>♪ {project.music.name}</div>
               : <span className="muted small" style={{ position: 'absolute', left: 8, top: 8 }}>Sin música</span>}
+          </div>
+
+          <div className="edtrack" style={{ height: audioTrackH }} onPointerDown={scrub}>
+            {(project.audios ?? []).map((a) => (
+              <div key={a.id} className={'edaudio' + (sel?.kind === 'audio' && sel.id === a.id ? ' on' : '')}
+                style={{ left: a.start * pps, width: Math.max(14, a.duration * pps), top: 4 + (audioLanes.lane.get(a.id) ?? 0) * 30 }}
+                onPointerDown={(e) => audioDown(e, a)}>
+                <span>{a.kind === 'voice' ? '🎙' : a.kind === 'music' ? '♪' : '🔊'} {a.name}</span>
+                <i className="h r" onPointerDown={(e) => audioEnd(e, a)} />
+              </div>
+            ))}
+            {!(project.audios ?? []).length && <span className="muted small" style={{ position: 'absolute', left: 8, top: 8 }}>Sin audios extra (efectos, voz)</span>}
           </div>
 
           <div className="edplayhead" style={{ left: playhead * pps }}><i /></div>

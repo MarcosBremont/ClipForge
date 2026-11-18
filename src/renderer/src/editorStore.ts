@@ -3,7 +3,7 @@ import type { VideoAsset } from '@shared/types'
 import * as E from '@shared/editor'
 import { api, type EditorRow } from './api'
 
-export type Selection = { kind: 'clip' | 'text' | 'music'; id: string } | null
+export type Selection = { kind: 'clip' | 'text' | 'music' | 'audio'; id: string } | null
 const HISTORY_LIMIT = 100
 
 interface EditorState {
@@ -65,7 +65,7 @@ export const useEditor = create<EditorState>((set, get) => {
   const fixSel = (): void => {
     const { sel, project } = get()
     if (!sel) return
-    const exists = sel.kind === 'clip' ? project.clips.some((c) => c.id === sel.id) : sel.kind === 'text' ? project.texts.some((t) => t.id === sel.id) : !!project.music
+    const exists = sel.kind === 'clip' ? project.clips.some((c) => c.id === sel.id) : sel.kind === 'text' ? project.texts.some((t) => t.id === sel.id) : sel.kind === 'audio' ? (project.audios ?? []).some((a) => a.id === sel.id) : !!project.music
     if (!exists) set({ sel: null })
   }
   return {

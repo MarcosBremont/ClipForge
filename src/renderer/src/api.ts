@@ -1,3 +1,4 @@
+import type * as E from '@shared/editor'
 import type {
   AIProviderId, AIProviderInfo, AppSettings, DashboardStats, GeneratedVideo, GenSettings, JobProgress, Library, Plan,
   Project, TextStyle, TextTemplate, VideoAsset
@@ -29,9 +30,10 @@ export interface RenderRequest {
 
 export interface EditorExportRequest {
   name: string
-  clips: Array<{ videoId: number; srcStart: number; srcEnd: number; speed: number; volume: number }>
+  clips: Array<Pick<E.EClip, 'videoId' | 'srcStart' | 'srcEnd' | 'speed' | 'volume' | 'fadeIn' | 'fadeOut' | 'bright' | 'contrast' | 'sat' | 'warmth' | 'scale' | 'rot' | 'flip' | 'px' | 'py'>>
   texts: Array<{ png: Uint8Array; start: number; end: number }>
   music: { path: string; volume: number } | null
+  audios: Array<{ path: string; start: number; duration: number; volume: number; fadeIn: number; fadeOut: number }>
   fps: 30 | 60
   quality: 'alta' | 'media' | 'rapida'
 }

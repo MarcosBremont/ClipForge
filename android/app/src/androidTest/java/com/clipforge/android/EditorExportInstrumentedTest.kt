@@ -9,6 +9,8 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.clipforge.android.editor.ClipLook
+import com.clipforge.android.export.EditorAudioSpec
 import com.clipforge.android.export.EditorClipSpec
 import com.clipforge.android.export.EditorSpec
 import com.clipforge.android.export.EditorTextSpec
@@ -151,5 +153,60 @@ class EditorExportInstrumentedTest {
         val music = asset("music.m4a")
         val withMusic = render(spec(emptyList(), music), "c.mp4")
         assertTrue("la música suena aunque el clip esté mudo (rms=${audioRms(withMusic, 200, 1800)})", audioRms(withMusic, 200, 1800) > 300)
+    }
+
+    // ---------------------------------------------------------------- aspecto del clip (Fase 1)
+    private fun look(fadeIn: Double = 0.0, fadeOut: Double = 0.0, bright: Double = 0.0, contrast: Double = 1.0, sat: Double = 1.0, warmth: Double = 0.0,
+                     scale: Double = 1.0, rot: Double = 0.0, flip: Boolean = false, px: Double = 0.0, py: Double = 0.0) =
+        ClipLook(fadeIn, fadeOut, bright, contrast, sat, warmth, scale, rot, flip, px, py)
+
+    private fun one(asset: String, look: ClipLook, name: String, dur: Long = 4000, audios: List<EditorAudioSpec> = emptyList(), volume: Float = 1f): File =
+        render(EditorSpec("t", listOf(EditorClipSpec(asset(asset), 0, dur, 1f, volume, look)), emptyList(), null, 0.5f, 30, "rapida", audios), name)
+
+    private fun lum(p: Int) = ((p shr 16 and 255) + (p shr 8 and 255) + (p and 255)) / 3
+
+    @Test fun fundidoDeEntradaYSalida() {
+        val out = one("red.mp4", look(fadeIn = 1.0, fadeOut = 1.0), "fade.mp4")
+        val a = frame(out, 60).getPixel(300, 300); val b = frame(out, 2000).getPixel(300, 300); val c = frame(out, 3900).getPixel(300, 300)
+        assertTrue("empieza casi negro (${lum(a)})", lum(a) < 90)
+        assertTrue("rojo pleno al centro", near(b, 255, 0, 0))
+        assertTrue("termina casi negro (${lum(c)})", lum(c) < 90)
+    }
+
+    @Test fun saturacionCeroDejaGrises() {
+        val p = frame(one("red.mp4", look(sat = 0.0), "gray.mp4"), 1000).getPixel(300, 300)
+        val mx = maxOf(p shr 16 and 255, p shr 8 and 255, p and 255); val mn = minOf(p shr 16 and 255, p shr 8 and 255, p and 255)
+        assertTrue("gris (${p.toString(16)})", mx - mn < 30)
+    }
+
+    @Test fun zoomMedioDejaBordesNegrosYDesplaza() {
+        val small = frame(one("red.mp4", look(scale = 0.5), "small.mp4"), 1000)
+        assertTrue("centro rojo", near(small.getPixel(540, 960), 255, 0, 0))
+        assertTrue("esquina negra (${lum(small.getPixel(20, 20))})", lum(small.getPixel(20, 20)) < 50)
+        val moved = frame(one("red.mp4", look(scale = 0.5, px = 0.25), "moved.mp4"), 1000)
+        assertTrue("rojo desplazado a la derecha", near(moved.getPixel(540 + 270, 960), 255, 0, 0))
+        assertTrue("a la izquierda queda negro", lum(moved.getPixel(540 - 400, 960)) < 50)
+        val down = frame(one("red.mp4", look(scale = 0.5, py = 0.25), "down.mp4"), 1000)
+        assertTrue("py positivo baja el clip", near(down.getPixel(540, 960 + 480), 255, 0, 0) && lum(down.getPixel(540, 960 - 700)) < 50)
+    }
+
+    @Test fun giroHorarioLlevaLaIzquierdaArriba() {
+        // split.mp4: mitad izquierda roja, derecha azul. Girar 90° en sentido horario deja el rojo arriba y el azul abajo.
+        val out = one("split.mp4", look(rot = 90.0), "rot.mp4", dur = 2000)
+        val f = frame(out, 800)
+        assertTrue("rojo arriba (${f.getPixel(540, 600).toString(16)})", near(f.getPixel(540, 600), 255, 0, 0))
+        assertTrue("azul abajo (${f.getPixel(540, 1300).toString(16)})", near(f.getPixel(540, 1300), 0, 0, 255))
+        val mirror = frame(one("split.mp4", look(flip = true), "flip.mp4", dur = 2000), 800)
+        assertTrue("espejo: el azul pasa a la izquierda", near(mirror.getPixel(200, 960), 0, 0, 255) && near(mirror.getPixel(900, 960), 255, 0, 0))
+    }
+
+    @Test fun pistaDeAudioConInicioPropio() {
+        val music = asset("music.m4a")
+        // clip mudo de 4 s y una pista que empieza a los 2 s y dura 1 s
+        val out = one("red.mp4", look(), "aud.mp4", audios = listOf(EditorAudioSpec(music, 2000, 1000, 1f, 0, 0)), volume = 0f)
+        val before = audioRms(out, 200, 1700); val during = audioRms(out, 2150, 2850); val after = audioRms(out, 3200, 3900)
+        assertTrue("silencio antes ($before)", before < 60)
+        assertTrue("suena desde 2 s ($during)", during > 300)
+        assertTrue("se corta tras su duración ($after)", after < 60)
     }
 }

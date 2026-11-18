@@ -8,7 +8,19 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.graphics.Matrix
+import androidx.media3.common.C
 import androidx.media3.common.Effect
+import androidx.media3.common.audio.BaseAudioProcessor
+import androidx.media3.effect.Brightness
+import androidx.media3.effect.Contrast
+import androidx.media3.effect.HslAdjustment
+import androidx.media3.effect.MatrixTransformation
+import androidx.media3.effect.RgbAdjustment
+import androidx.media3.effect.RgbMatrix
+import com.clipforge.android.editor.ClipLook
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
@@ -52,7 +64,9 @@ data class ExportSpec(
 )
 
 // ---- editor de video
-data class EditorClipSpec(val uri: String, val srcStartMs: Long, val srcEndMs: Long, val speed: Float, val volume: Float)
+val NO_LOOK = ClipLook(0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, false, 0.0, 0.0)
+data class EditorClipSpec(val uri: String, val srcStartMs: Long, val srcEndMs: Long, val speed: Float, val volume: Float, val look: ClipLook = NO_LOOK)
+data class EditorAudioSpec(val uri: String, val startMs: Long, val durMs: Long, val volume: Float, val fadeInMs: Long, val fadeOutMs: Long)
 data class EditorTextSpec(val text: String, val style: TextStyle, val startUs: Long, val endUs: Long)
 data class EditorSpec(
     val name: String,
@@ -61,8 +75,58 @@ data class EditorSpec(
     val musicUri: String?,
     val musicVolume: Float,
     val fps: Int,
-    val quality: String
+    val quality: String,
+    val audios: List<EditorAudioSpec> = emptyList()
 )
+
+/** Multiplica el volumen por un fundido de entrada y/o salida (instantes locales del elemento, ya a velocidad final). */
+private class FadeAudioProcessor(private val fadeInUs: Long, private val fadeOutUs: Long, private val durUs: Long) : BaseAudioProcessor() {
+    private var frames = 0L
+    override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat =
+        if (inputAudioFormat.encoding == C.ENCODING_PCM_16BIT) inputAudioFormat else AudioProcessor.AudioFormat.NOT_SET
+    override fun queueInput(inputBuffer: ByteBuffer) {
+        val n = inputBuffer.remaining()
+        val out = replaceOutputBuffer(n).order(ByteOrder.nativeOrder())
+        val ch = inputAudioFormat.channelCount
+        val sr = inputAudioFormat.sampleRate.toLong()
+        val src = inputBuffer.order(ByteOrder.nativeOrder())
+        var left = n
+        while (left >= 2 * ch) {
+            val t = frames * 1_000_000L / sr
+            var g = 1f
+            if (fadeInUs > 0) g = minOf(g, t.toFloat() / fadeInUs)
+            if (fadeOutUs > 0) g = minOf(g, (durUs - t).toFloat() / fadeOutUs)
+            g = g.coerceIn(0f, 1f)
+            repeat(ch) { out.putShort((src.short * g).toInt().coerceIn(-32768, 32767).toShort()) }
+            frames++; left -= 2 * ch
+        }
+        while (src.hasRemaining()) out.put(src.get()) // restos que no forman un fotograma completo
+        out.flip()
+    }
+    override fun onFlush() { frames = 0 }
+}
+
+/** Fundido a negro de imagen: multiplica RGB. Los instantes son de la línea de tiempo (los efectos de Transformer usan tiempo global). */
+private class FadeRgb(private val startUs: Long, private val durUs: Long, private val fadeInUs: Long, private val fadeOutUs: Long) : RgbMatrix {
+    override fun getMatrix(presentationTimeUs: Long, useHdr: Boolean): FloatArray {
+        val t = presentationTimeUs - startUs
+        var g = 1f
+        if (fadeInUs > 0) g = minOf(g, t.toFloat() / fadeInUs)
+        if (fadeOutUs > 0) g = minOf(g, (durUs - t).toFloat() / fadeOutUs)
+        g = g.coerceIn(0f, 1f)
+        return floatArrayOf(g, 0f, 0f, 0f, 0f, g, 0f, 0f, 0f, 0f, g, 0f, 0f, 0f, 0f, 1f)
+    }
+}
+
+/** Encuadre: espejo → zoom → giro (° horario) → desplazamiento, sobre el fotograma 1080×1920 (lo que queda fuera se recorta; el resto, negro). */
+fun frameMatrix(l: ClipLook, w: Int = Exporter.WIDTH, h: Int = Exporter.HEIGHT): Matrix {
+    val m = Matrix()
+    if (l.flip) m.postScale(-1f, 1f)
+    m.postScale(l.scale.toFloat(), l.scale.toFloat())
+    if (l.rot != 0.0) { m.postScale(w / 2f, h / 2f); m.postRotate(-l.rot.toFloat()); m.postScale(2f / w, 2f / h) } // corrige la proporción para girar sin deformar
+    m.postTranslate((l.px * 2).toFloat(), (-l.py * 2).toFloat())
+    return m
+}
 
 /** Muestra un bitmap solo entre [startUs, endUs) de la línea de tiempo (instantes globales de la secuencia). */
 private class TimedOverlay(private val shown: Bitmap, private val blank: Bitmap, private val startUs: Long, private val endUs: Long) : BitmapOverlay() {
@@ -101,20 +165,24 @@ class Exporter(private val ctx: Context) {
             bitmaps.add(bmp)
             t to bmp
         }
+        var startUs = 0L
         val items = spec.clips.map { c ->
             // Instancias nuevas por clip: cada OverlayEffect gestiona su propia textura.
             val overlays: List<TextureOverlay> = textBitmaps.map { (t, bmp) -> TimedOverlay(bmp, blank, t.startUs, t.endUs) }
-            item(c.uri, c.srcStartMs, c.srcEndMs, c.speed, c.volume, spec.fps, overlays)
+            val durUs = ((c.srcEndMs - c.srcStartMs) * 1000 / c.speed).toLong()
+            item(c.uri, c.srcStartMs, c.srcEndMs, c.speed, c.volume, spec.fps, overlays, c.look, startUs, durUs).also { startUs += durUs }
         }
         val sequences = mutableListOf(EditedMediaItemSequence(items))
         val totalMs = spec.clips.sumOf { ((it.srcEndMs - it.srcStartMs) / it.speed).toLong() }
         spec.musicUri?.let { sequences.add(musicSequence(it, spec.musicVolume, totalMs)) }
-        launch(cont, sequences, out, spec.quality, bitmaps, onProgress)
+        val tmp = ArrayList<File>()
+        for (a in spec.audios) if (a.durMs > 0) sequences.add(audioSequence(a, tmp))
+        launch(cont, sequences, out, spec.quality, bitmaps, onProgress, tmp)
     }
 
     // ---------------------------------------------------------------- piezas comunes
 
-    private fun item(uri: String, startMs: Long, endMs: Long, speed: Float, volume: Float, fps: Int, overlays: List<TextureOverlay>): EditedMediaItem {
+    private fun item(uri: String, startMs: Long, endMs: Long, speed: Float, volume: Float, fps: Int, overlays: List<TextureOverlay>, look: ClipLook = NO_LOOK, startUs: Long = 0, durUs: Long = 0): EditedMediaItem {
         val mi = MediaItem.Builder().setUri(uri)
             .setClippingConfiguration(MediaItem.ClippingConfiguration.Builder().setStartPositionMs(startMs).setEndPositionMs(endMs).build()).build()
         val video = mutableListOf<Effect>()
@@ -122,11 +190,23 @@ class Exporter(private val ctx: Context) {
         // 30 fps: descarta fotogramas. 60 fps: conserva el ritmo nativo del original (Transformer no interpola).
         if (fps == 30) video.add(FrameDropEffect.createDefaultFrameDropEffect(30f))
         video.add(Presentation.createForWidthAndHeight(WIDTH, HEIGHT, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))
+        // Color (antes del encuadre, para no teñir el fondo negro), encuadre y fundido.
+        if (look.bright != 0.0) video.add(Brightness(look.bright.toFloat()))
+        if (look.contrast != 1.0) video.add(Contrast((look.contrast - 1).toFloat()))
+        if (look.sat != 1.0) video.add(HslAdjustment.Builder().adjustSaturation(((look.sat - 1) * 100).toFloat()).build())
+        if (look.warmth != 0.0) video.add(RgbAdjustment.Builder().setRedScale((1 + 0.15 * look.warmth).toFloat()).setBlueScale((1 - 0.15 * look.warmth).toFloat()).build())
+        if (look.scale != 1.0 || look.rot != 0.0 || look.flip || look.px != 0.0 || look.py != 0.0) {
+            val m = frameMatrix(look)
+            video.add(MatrixTransformation { Matrix(m) })
+        }
+        val fi = (look.fadeIn * 1_000_000).toLong(); val fo = (look.fadeOut * 1_000_000).toLong()
+        if (fi > 0 || fo > 0) video.add(FadeRgb(startUs, durUs, fi, fo))
         // El texto va DESPUÉS del escalado, cuando el fotograma ya mide 1080×1920 como el bitmap (mismo dibujado que la vista previa).
         if (overlays.isNotEmpty()) video.add(OverlayEffect(ImmutableList.copyOf(overlays)))
         val audio = mutableListOf<AudioProcessor>()
         if (speed != 1f) audio.add(SonicAudioProcessor().apply { setSpeed(speed); setPitch(1f) }) // cambia la velocidad sin cambiar el tono
         if (volume in 0.001f..0.999f) audio.add(volumeProcessor(volume))
+        if ((fi > 0 || fo > 0) && volume > 0.001f) audio.add(FadeAudioProcessor(fi, fo, durUs))
         return EditedMediaItem.Builder(mi)
             .setRemoveAudio(volume <= 0.001f)
             .setEffects(Effects(audio, video))
@@ -143,6 +223,41 @@ class Exporter(private val ctx: Context) {
         return EditedMediaItemSequence(listOf(music), true) // en bucle si la canción es más corta que el video
     }
 
+    /** Pista de audio con inicio propio: un silencio (WAV generado) hasta el inicio y luego el archivo recortado a su duración. */
+    private fun audioSequence(a: EditorAudioSpec, tmp: MutableList<File>): EditedMediaItemSequence {
+        val items = ArrayList<EditedMediaItem>()
+        if (a.startMs > 0) items.add(EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(silenceWav(a.startMs).also { tmp.add(it) }))).setRemoveVideo(true).build())
+        val proc = mutableListOf<AudioProcessor>()
+        if (a.volume < 0.999f) proc.add(volumeProcessor(a.volume))
+        if (a.fadeInMs > 0 || a.fadeOutMs > 0) proc.add(FadeAudioProcessor(a.fadeInMs * 1000, a.fadeOutMs * 1000, a.durMs * 1000))
+        items.add(
+            EditedMediaItem.Builder(
+                MediaItem.Builder().setUri(a.uri)
+                    .setClippingConfiguration(MediaItem.ClippingConfiguration.Builder().setStartPositionMs(0).setEndPositionMs(a.durMs).build()).build()
+            ).setRemoveVideo(true).setEffects(Effects(proc, emptyList<Effect>())).build()
+        )
+        return EditedMediaItemSequence(items)
+    }
+
+    /** WAV de silencio (8 kHz, mono, 16 bits) de la duración pedida, en la caché. */
+    private fun silenceWav(ms: Long): File {
+        val rate = 8000
+        val samples = (ms * rate / 1000).toInt().coerceAtLeast(1)
+        val data = samples * 2
+        val f = File.createTempFile("silence", ".wav", ctx.cacheDir)
+        f.outputStream().buffered().use { o ->
+            val h = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+            h.put("RIFF".toByteArray()); h.putInt(36 + data); h.put("WAVEfmt ".toByteArray()); h.putInt(16)
+            h.putShort(1); h.putShort(1); h.putInt(rate); h.putInt(rate * 2); h.putShort(2); h.putShort(16)
+            h.put("data".toByteArray()); h.putInt(data)
+            o.write(h.array())
+            val zeros = ByteArray(8192)
+            var left = data
+            while (left > 0) { val n = minOf(left, zeros.size); o.write(zeros, 0, n); left -= n }
+        }
+        return f
+    }
+
     private fun volumeProcessor(vol: Float): ChannelMixingAudioProcessor {
         val p = ChannelMixingAudioProcessor()
         for (ch in 1..2) p.putChannelMixingMatrix(ChannelMixingMatrix.create(ch, ch).scaleBy(vol.coerceIn(0f, 1f)))
@@ -151,7 +266,7 @@ class Exporter(private val ctx: Context) {
 
     private fun launch(
         cont: CancellableContinuation<Unit>, sequences: List<EditedMediaItemSequence>, out: File, quality: String,
-        bitmaps: List<Bitmap>, onProgress: (Float) -> Unit
+        bitmaps: List<Bitmap>, onProgress: (Float) -> Unit, tmpFiles: List<File> = emptyList()
     ) {
         out.parentFile?.mkdirs()
         if (out.exists()) out.delete()
@@ -171,11 +286,11 @@ class Exporter(private val ctx: Context) {
             .setEncoderFactory(encoder)
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-                    handler.removeCallbacks(progress); bitmaps.forEach { it.recycle() }
+                    handler.removeCallbacks(progress); bitmaps.forEach { it.recycle() }; tmpFiles.forEach { it.delete() }
                     if (cont.isActive) cont.resume(Unit)
                 }
                 override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
-                    handler.removeCallbacks(progress); bitmaps.forEach { it.recycle() }
+                    handler.removeCallbacks(progress); bitmaps.forEach { it.recycle() }; tmpFiles.forEach { it.delete() }
                     if (cont.isActive) cont.resumeWithException(exportException)
                 }
             })
@@ -185,7 +300,7 @@ class Exporter(private val ctx: Context) {
             if (transformer.getProgress(holder) != Transformer.PROGRESS_STATE_NOT_STARTED) onProgress(holder.progress / 100f)
             handler.postDelayed(progress, 250)
         }
-        cont.invokeOnCancellation { handler.post { handler.removeCallbacks(progress); transformer.cancel() } }
+        cont.invokeOnCancellation { handler.post { handler.removeCallbacks(progress); transformer.cancel(); tmpFiles.forEach { it.delete() } } }
         transformer.start(composition, out.absolutePath)
         handler.post(progress)
     }

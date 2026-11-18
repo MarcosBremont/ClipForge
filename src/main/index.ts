@@ -1,3 +1,4 @@
+import type { EClip } from '../shared/editor'
 import { app, BrowserWindow, dialog, ipcMain, protocol, session, shell } from 'electron'
 import { createReadStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
@@ -164,9 +165,10 @@ function startRender(req: RenderRequest): string {
 // ---------- exportación del editor de video ----------
 export interface EditorExportRequest {
   name: string
-  clips: Array<{ videoId: number; srcStart: number; srcEnd: number; speed: number; volume: number }>
+  clips: Array<Pick<EClip, 'videoId' | 'srcStart' | 'srcEnd' | 'speed' | 'volume' | 'fadeIn' | 'fadeOut' | 'bright' | 'contrast' | 'sat' | 'warmth' | 'scale' | 'rot' | 'flip' | 'px' | 'py'>>
   texts: Array<{ png: Uint8Array; start: number; end: number }>
   music: { path: string; volume: number } | null
+  audios: Array<{ path: string; start: number; duration: number; volume: number; fadeIn: number; fadeOut: number }>
   fps: 30 | 60
   quality: 'alta' | 'media' | 'rapida'
 }
@@ -184,7 +186,7 @@ function startEditorExport(req: EditorExportRequest): string {
         const v = byId.get(c.videoId)
         if (!v) throw new Error('Un clip usa un video que ya no está en la biblioteca')
         if (!existsSync(v.path)) throw new Error(`No se encuentra el archivo: ${v.name}`)
-        return { path: v.path, srcStart: c.srcStart, srcEnd: Math.min(c.srcEnd, v.duration), speed: c.speed, volume: c.volume, hasAudio: v.hasAudio }
+        return { ...c, path: v.path, srcEnd: Math.min(c.srcEnd, v.duration), hasAudio: v.hasAudio }
       })
       const hw = getAppSettings().hwAccel ? (await availableHwEncoders())[0] : undefined
       const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
@@ -192,7 +194,7 @@ function startEditorExport(req: EditorExportRequest): string {
       const tmpDir = join(dir('tmp'), jobId)
       emitProgress({ jobId, kind: 'render', label, done: 0, total: 1000, status: 'running', message: 'Renderizando' })
       const r = await renderEditor({
-        clips, texts: req.texts.map((t) => ({ png: Buffer.from(t.png), start: t.start, end: t.end })), music: req.music,
+        clips, texts: req.texts.map((t) => ({ png: Buffer.from(t.png), start: t.start, end: t.end })), music: req.music, audios: req.audios ?? [],
         fps: req.fps, quality: req.quality, outPath, tmpDir,
         onProgress: (f) => emitProgress({ jobId, kind: 'render', label, done: Math.round(f * 1000), total: 1000, status: 'running', message: 'Renderizando' }),
         onSpawn: (p) => { ctl.procs.add(p); p.on('close', () => ctl.procs.delete(p)) },

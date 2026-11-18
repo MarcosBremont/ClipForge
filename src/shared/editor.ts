@@ -7,7 +7,15 @@ export const MIN_TEXT = 0.3
 export const SPEEDS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4]
 
 /** Un tramo de un video de la biblioteca. Dura (srcEnd - srcStart) / speed en la línea de tiempo. */
-export interface EClip { id: string; videoId: number; srcStart: number; srcEnd: number; speed: number; volume: number }
+export interface EClip {
+  id: string; videoId: number; srcStart: number; srcEnd: number; speed: number; volume: number
+  // Aspecto del clip (todos opcionales: ausente = valor por defecto; ver clipLook).
+  fadeIn?: number; fadeOut?: number // s: fundido desde/hacia negro (imagen y sonido)
+  bright?: number; contrast?: number; sat?: number; warmth?: number; filter?: string
+  scale?: number; rot?: number; flip?: boolean; px?: number; py?: number // encuadre: zoom, giro (grados, sentido horario), espejo, desplazamiento (fraccion del cuadro)
+}
+/** Una pista de audio colocada en la linea de tiempo (efectos, voz, musica extra). Suena una vez desde start. */
+export interface EAudio { id: string; path: string; name: string; kind: 'music' | 'sfx' | 'voice'; start: number; duration: number; volume: number; fadeIn: number; fadeOut: number }
 /** Un texto con su tiempo. La posición, tamaño y estilo viven en `style` (x, y = centro del bloque, 0..1). */
 export interface EText { id: string; text: string; start: number; duration: number; style: TextStyle }
 export interface EMusic { path: string; name: string; volume: number }
@@ -17,11 +25,12 @@ export interface EditorProject {
   clips: EClip[]
   texts: EText[]
   music: EMusic | null
+  audios?: EAudio[]
   fps: 30 | 60
   quality: 'alta' | 'media' | 'rapida'
 }
 
-export const newProject = (): EditorProject => ({ id: null, name: 'Proyecto del editor', clips: [], texts: [], music: null, fps: 30, quality: 'media' })
+export const newProject = (): EditorProject => ({ id: null, name: 'Proyecto del editor', clips: [], texts: [], music: null, audios: [], fps: 30, quality: 'media' })
 
 let counter = 0
 export const eid = (prefix = 'e'): string => prefix + Date.now().toString(36) + (counter++).toString(36) + Math.floor(Math.random() * 1296).toString(36)
@@ -52,9 +61,40 @@ export function locate(p: EditorProject, t: number): { index: number; start: num
   return { index: i, start: starts[i], src: clamp(c.srcStart + (tt - starts[i]) * c.speed, c.srcStart, c.srcEnd) }
 }
 
-/** Mantiene los textos dentro de la duración del video (tras cortar, borrar o cambiar velocidades). */
+export const MIN_AUDIO = 0.2
+export const FILTERS: Record<string, { bright: number; contrast: number; sat: number; warmth: number }> = {
+  none: { bright: 0, contrast: 1, sat: 1, warmth: 0 },
+  vivid: { bright: 0.02, contrast: 1.15, sat: 1.4, warmth: 0.05 },
+  warm: { bright: 0.02, contrast: 1.05, sat: 1.1, warmth: 0.5 },
+  cool: { bright: 0, contrast: 1.05, sat: 1, warmth: -0.5 },
+  bw: { bright: 0, contrast: 1.1, sat: 0, warmth: 0 },
+  vintage: { bright: 0.03, contrast: 0.9, sat: 0.7, warmth: 0.35 },
+  dramatic: { bright: -0.03, contrast: 1.35, sat: 0.9, warmth: -0.1 }
+}
+
+export interface ClipLook { fadeIn: number; fadeOut: number; bright: number; contrast: number; sat: number; warmth: number; scale: number; rot: number; flip: boolean; px: number; py: number }
+/** Aspecto completo del clip con los valores por defecto aplicados. Los fundidos nunca pasan de la mitad del clip. */
+export function clipLook(c: EClip): ClipLook {
+  const half = clipDur(c) / 2
+  return {
+    fadeIn: clamp(c.fadeIn ?? 0, 0, half), fadeOut: clamp(c.fadeOut ?? 0, 0, half),
+    bright: c.bright ?? 0, contrast: c.contrast ?? 1, sat: c.sat ?? 1, warmth: c.warmth ?? 0,
+    scale: c.scale ?? 1, rot: c.rot ?? 0, flip: c.flip ?? false, px: c.px ?? 0, py: c.py ?? 0
+  }
+}
+/** Necesita correccion de color? (si no, la exportacion usa el camino rapido) */
+export const hasColor = (c: EClip): boolean => { const l = clipLook(c); return l.bright !== 0 || l.contrast !== 1 || l.sat !== 1 || l.warmth !== 0 }
+export const hasFrame = (c: EClip): boolean => { const l = clipLook(c); return l.scale !== 1 || l.rot !== 0 || l.flip || l.px !== 0 || l.py !== 0 }
+
+/** Mantiene textos y audios dentro de la duración del video (tras cortar, borrar o cambiar velocidades). */
 export function normalize(p: EditorProject): EditorProject {
   const total = totalDuration(p)
+  const audios = (p.audios ?? []).map((a) => {
+    const start = clamp(a.start, 0, Math.max(0, total - MIN_AUDIO))
+    const duration = clamp(a.duration, Math.min(MIN_AUDIO, total - start), Math.max(0, total - start))
+    return start === a.start && duration === a.duration ? a : { ...a, start: r3(start), duration: r3(duration) }
+  }).filter((a) => total > 0 && a.duration > 0)
+  p = { ...p, audios }
   const texts = total <= 0 ? [] : p.texts.map((t) => {
     const start = clamp(t.start, 0, Math.max(0, total - MIN_TEXT))
     const duration = clamp(t.duration, Math.min(MIN_TEXT, total - start), total - start)
@@ -117,12 +157,61 @@ export function duplicateClip(p: EditorProject, id: string): { project: EditorPr
   return { project: withClips(p, clips), selectId: copy.id }
 }
 
-export function setClip(p: EditorProject, id: string, patch: Partial<Pick<EClip, 'speed' | 'volume'>>): EditorProject {
-  return withClips(p, p.clips.map((c) => c.id !== id ? c : {
-    ...c,
-    speed: patch.speed === undefined ? c.speed : clamp(patch.speed, 0.25, 4),
-    volume: patch.volume === undefined ? c.volume : clamp(patch.volume, 0, 1)
+type ClipPatch = Partial<Pick<EClip, 'speed' | 'volume' | 'fadeIn' | 'fadeOut' | 'bright' | 'contrast' | 'sat' | 'warmth' | 'filter' | 'scale' | 'rot' | 'flip' | 'px' | 'py'>>
+const RANGES: Record<string, [number, number]> = { volume: [0, 1], fadeIn: [0, 3], fadeOut: [0, 3], bright: [-0.5, 0.5], contrast: [0.5, 1.5], sat: [0, 2], warmth: [-1, 1], scale: [0.25, 4], rot: [-180, 180], px: [-1, 1], py: [-1, 1] }
+export function setClip(p: EditorProject, id: string, patch: ClipPatch): EditorProject {
+  return withClips(p, p.clips.map((c) => {
+    if (c.id !== id) return c
+    const n: EClip = { ...c }
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) continue
+      if (k === 'speed') n.speed = clamp(v as number, 0.25, 4)
+      else if (k === 'flip') n.flip = !!v
+      else if (k === 'filter') n.filter = v as string
+      else { const [lo, hi] = RANGES[k]; (n as unknown as Record<string, number>)[k] = r3(clamp(v as number, lo, hi)) }
+    }
+    return n
   }))
+}
+
+/** Aplica un filtro prediseñado (ajusta brillo, contraste, saturación y calidez). */
+export function applyFilter(p: EditorProject, id: string, name: string): EditorProject {
+  const f = FILTERS[name]
+  return f ? setClip(p, id, { ...f, filter: name }) : p
+}
+
+/** Transición entre el clip index y el siguiente: fundido a negro de dur s a cada lado (0 la quita). */
+export function setTransition(p: EditorProject, index: number, dur: number): EditorProject {
+  if (index < 0 || index >= p.clips.length - 1) return p
+  const d = r3(clamp(dur, 0, 3))
+  return withClips(p, p.clips.map((c, i) => i === index ? { ...c, fadeOut: d } : i === index + 1 ? { ...c, fadeIn: d } : c))
+}
+/** Duración de la transición en la unión entre index e index+1 (0 si no hay). */
+export const transitionAt = (p: EditorProject, index: number): number => {
+  const a = p.clips[index]; const b = p.clips[index + 1]
+  return a && b ? Math.min(clipLook(a).fadeOut, clipLook(b).fadeIn) : 0
+}
+
+// ---------- pistas de audio ----------
+/** Agrega una pista en at. fileDur es la duración del archivo (0 si se desconoce: entonces ocupa hasta el final). */
+export function addAudio(p: EditorProject, path: string, name: string, kind: EAudio['kind'], at: number, fileDur = 0): { project: EditorProject; selectId: string } {
+  const total = totalDuration(p)
+  const start = clamp(at, 0, Math.max(0, total - MIN_AUDIO))
+  const room = Math.max(MIN_AUDIO, total - start)
+  const a: EAudio = { id: eid('a'), path, name, kind, start: r3(start), duration: r3(fileDur > 0 ? Math.min(fileDur, room) : room), volume: kind === 'music' ? 0.8 : 1, fadeIn: 0, fadeOut: 0 }
+  return { project: normalize({ ...p, audios: [...(p.audios ?? []), a] }), selectId: a.id }
+}
+export const setAudio = (p: EditorProject, id: string, patch: Partial<Pick<EAudio, 'volume' | 'fadeIn' | 'fadeOut' | 'start' | 'duration'>>): EditorProject =>
+  normalize({ ...p, audios: (p.audios ?? []).map((a) => {
+    if (a.id !== id) return a
+    const n = { ...a, ...patch }
+    n.volume = clamp(n.volume, 0, 1); n.fadeIn = clamp(n.fadeIn, 0, n.duration / 2); n.fadeOut = clamp(n.fadeOut, 0, n.duration / 2)
+    return n
+  }) })
+export const removeAudio = (p: EditorProject, id: string): EditorProject => ({ ...p, audios: (p.audios ?? []).filter((a) => a.id !== id) })
+export function moveAudio(p: EditorProject, id: string, start: number): EditorProject {
+  const a = (p.audios ?? []).find((x) => x.id === id)
+  return a ? setAudio(p, id, { start: r3(clamp(start, 0, Math.max(0, totalDuration(p) - a.duration))) }) : p
 }
 
 // ---------- textos ----------
@@ -186,4 +275,43 @@ export function fromPlan(segments: Array<{ videoId: number; start: number; durat
   let p: EditorProject = { id: null, name, clips, texts: [], music: null, fps, quality }
   if (text.trim()) p = { ...p, texts: [{ id: eid('t'), text, start: 0, duration: totalDuration(p), style: { ...style, wholeVideo: true, startAt: 0, endAt: null } }] }
   return normalize(p)
+}
+
+// ---------- subtítulos desde un guion ----------
+/** Divide un guion en frases cortas: máximo `maxWords` palabras y corte natural tras puntuación. */
+export function splitCaptions(text: string, maxWords = 4): string[] {
+  const words = text.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
+  const out: string[] = []
+  let cur: string[] = []
+  for (const w of words) {
+    cur.push(w)
+    const stop = /[.!?…;:]$/.test(w) || (/,$/.test(w) && cur.length >= 2)
+    if (cur.length >= Math.max(1, maxWords) || (stop && cur.length >= 2) || (/[.!?…]$/.test(w))) { out.push(cur.join(' ')); cur = [] }
+  }
+  if (cur.length) { if (out.length && cur.length === 1 && out[out.length - 1].split(' ').length < Math.max(1, maxWords) * 2) out[out.length - 1] += ' ' + cur[0]; else out.push(cur.join(' ')) }
+  return out
+}
+
+/**
+ * Reparte las frases del guion por la línea de tiempo entre `from` y `to` (por defecto, todo el video), cada una con
+ * una duración proporcional a su longitud. Los subtítulos son textos normales: se pueden mover, editar y borrar.
+ */
+export function captionsFromText(p: EditorProject, text: string, style: TextStyle, opts: { from?: number; to?: number; maxWords?: number } = {}): { project: EditorProject; ids: string[] } {
+  const total = totalDuration(p)
+  const from = clamp(opts.from ?? 0, 0, Math.max(0, total - MIN_TEXT))
+  const to = clamp(opts.to ?? total, from + MIN_TEXT, Math.max(total, from + MIN_TEXT))
+  const parts = total > 0 ? splitCaptions(text, opts.maxWords ?? 4) : []
+  if (!parts.length) return { project: p, ids: [] }
+  const span = Math.min(to, total) - from
+  const weights = parts.map((s) => s.length + 4)
+  const sum = weights.reduce((a, b) => a + b, 0)
+  let t = from
+  const texts: EText[] = parts.map((s, i) => {
+    const d = i === parts.length - 1 ? from + span - t : (span * weights[i]) / sum
+    const e: EText = { id: eid('t'), text: s, start: r3(t), duration: r3(Math.max(MIN_TEXT, d)), style: { ...style, wholeVideo: true, startAt: 0, endAt: null } }
+    t += d
+    return e
+  })
+  const next = normalize({ ...p, texts: [...p.texts, ...texts] })
+  return { project: next, ids: texts.map((x) => x.id) }
 }

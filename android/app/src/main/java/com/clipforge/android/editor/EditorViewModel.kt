@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.clipforge.android.data.EditorProjectEntity
 import com.clipforge.android.data.VideoEntity
+import com.clipforge.android.export.EditorAudioSpec
 import com.clipforge.android.export.EditorClipSpec
 import com.clipforge.android.export.EditorSpec
 import com.clipforge.android.export.EditorTextSpec
@@ -24,7 +25,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-enum class SelKind { CLIP, TEXT, MUSIC }
+enum class SelKind { CLIP, TEXT, MUSIC, AUDIO }
 data class Sel(val kind: SelKind, val id: String)
 
 /** Estado del editor de video: proyecto, historial (deshacer/rehacer), selección, cabeza de reproducción y guardado automático. */
@@ -121,7 +122,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private fun fixSel() {
         val s = sel.value ?: return
         val p = project.value
-        val ok = when (s.kind) { SelKind.CLIP -> p.clips.any { it.id == s.id }; SelKind.TEXT -> p.texts.any { it.id == s.id }; SelKind.MUSIC -> p.music != null }
+        val ok = when (s.kind) { SelKind.CLIP -> p.clips.any { it.id == s.id }; SelKind.TEXT -> p.texts.any { it.id == s.id }; SelKind.MUSIC -> p.music != null; SelKind.AUDIO -> p.audios.any { it.id == s.id } }
         if (!ok) sel.value = null
     }
 
@@ -150,6 +151,16 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         apply { r.project }; select(Sel(SelKind.TEXT, r.selectId))
     }
 
+    /** Subtítulos a partir de un guion: se reparten desde el inicio (o desde la cabeza de reproducción) hasta el final. */
+    fun addCaptions(text: String, maxWords: Int, fromPlayhead: Boolean) {
+        val p = project.value
+        if (p.clips.isEmpty()) { say("Primero agrega un video a la línea de tiempo."); return }
+        val last = p.texts.lastOrNull()?.style
+        val style = (last ?: com.clipforge.android.model.TextStyle()).copy(x = 0.5f, y = 0.78f, fontSize = minOf(last?.fontSize ?: 64f, 64f))
+        val r = captionsFromText(p, text, style, if (fromPlayhead) playhead.value else 0.0, null, maxWords)
+        if (r == null) say("Escribe el guion de los subtítulos.") else { apply { r.project }; select(Sel(SelKind.TEXT, r.selectId)); say("Subtítulos agregados: se ven y se editan como textos.") }
+    }
+
     fun duplicateSelected() {
         val s = sel.value ?: return
         val r = when (s.kind) { SelKind.CLIP -> duplicateClip(project.value, s.id); SelKind.TEXT -> duplicateText(project.value, s.id); else -> null } ?: return
@@ -158,13 +169,29 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteSelected() {
         val s = sel.value ?: return
-        apply { when (s.kind) { SelKind.CLIP -> removeClip(it, s.id); SelKind.TEXT -> removeText(it, s.id); SelKind.MUSIC -> it.copy(music = null) } }
+        apply { when (s.kind) { SelKind.CLIP -> removeClip(it, s.id); SelKind.TEXT -> removeText(it, s.id); SelKind.MUSIC -> it.copy(music = null); SelKind.AUDIO -> removeAudio(it, s.id) } }
     }
 
     fun setMusic(uri: Uri, name: String) {
         try { getApplication<Application>().contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) { /* no necesario */ }
         apply { it.copy(music = EMusic(uri.toString(), name, 0.8)) }
         select(Sel(SelKind.MUSIC, "music"))
+    }
+
+    /** Agrega un efecto/voz/música extra en la cabeza de reproducción, con la duración real del archivo. */
+    fun addAudioFile(uri: Uri, name: String, kind: String) {
+        if (project.value.clips.isEmpty()) { say("Primero agrega un video a la línea de tiempo."); return }
+        try { getApplication<Application>().contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) { /* no necesario */ }
+        viewModelScope.launch {
+            val dur = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val r = android.media.MediaMetadataRetriever()
+                    try { r.setDataSource(getApplication<Application>(), uri); (r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L) / 1000.0 } finally { r.release() }
+                }.getOrDefault(0.0)
+            }
+            val r = addAudio(project.value, uri.toString(), name, kind, playhead.value, dur)
+            apply { r.project }; select(Sel(SelKind.AUDIO, r.selectId))
+        }
     }
 
     /** Convierte la selección automática del generador en un proyecto editable. */
@@ -184,13 +211,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val vids = dao.videosByIds(p.clips.map { it.videoId }.distinct()).associateBy { it.id }
         val clips = p.clips.map { c ->
             val v = vids[c.videoId] ?: run { say("Un clip usa un video que ya no está en la biblioteca."); return@launch }
-            EditorClipSpec(v.uri, (c.srcStart * 1000).toLong(), (minOf(c.srcEnd, v.duration) * 1000).toLong(), c.speed.toFloat(), c.volume.toFloat())
+            EditorClipSpec(v.uri, (c.srcStart * 1000).toLong(), (minOf(c.srcEnd, v.duration) * 1000).toLong(), c.speed.toFloat(), c.volume.toFloat(), clipLook(c))
         }
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val spec = EditorSpec(
             "ClipForge_Editor_$stamp", clips,
             p.texts.map { EditorTextSpec(it.text, it.style, (it.start * 1_000_000).toLong(), ((it.start + it.duration) * 1_000_000).toLong()) },
-            p.music?.uri, (p.music?.volume ?: 0.8).toFloat(), p.fps, p.quality
+            p.music?.uri, (p.music?.volume ?: 0.8).toFloat(), p.fps, p.quality,
+            p.audios.map { EditorAudioSpec(it.uri, (it.start * 1000).toLong(), (it.duration * 1000).toLong(), it.volume.toFloat(), (it.fadeIn * 1000).toLong(), (it.fadeOut * 1000).toLong()) }
         )
         ExportService.start(getApplication(), ExportBatch(0, listOf(ExportItem(spec.name, totalDuration(p), emptyList()) { ex, out, prog -> ex.renderEditor(spec, out, prog) })))
         onStarted()

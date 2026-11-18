@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict'
 import {
   addClip, addText, clipDur, clipStarts, duplicateClip, duplicateText, fromPlan, locate, moveClip, moveText, newProject, normalize,
-  removeClip, removeText, resizeText, setClip, setText, snap, splitAt, textsAt, totalDuration, trimClip, MIN_CLIP
+  removeClip, removeText, resizeText, setClip, setText, snap, splitAt, textsAt, totalDuration, trimClip, MIN_CLIP,
+  addAudio, captionsFromText, splitCaptions, applyFilter, clipLook, hasColor, hasFrame, moveAudio, removeAudio, setAudio, setTransition, transitionAt, FILTERS
 } from '../src/shared/editor.ts'
 import { DEFAULT_TEXT_STYLE } from '../src/shared/types.ts'
 
@@ -162,6 +163,80 @@ ok('normalize es idempotente', () => {
   let p = addText(base(), 3, 'a').project
   p = normalize(p)
   assert.deepEqual(normalize(p), p)
+})
+
+ok('setClip limita los valores de aspecto y clipLook devuelve los de fábrica', () => {
+  let p = addClip(newProject(), 1, 10)
+  const id = p.clips[0].id
+  assert.deepEqual(clipLook(p.clips[0]), { fadeIn: 0, fadeOut: 0, bright: 0, contrast: 1, sat: 1, warmth: 0, scale: 1, rot: 0, flip: false, px: 0, py: 0 })
+  assert.equal(hasColor(p.clips[0]), false); assert.equal(hasFrame(p.clips[0]), false)
+  p = setClip(p, id, { scale: 99, rot: 400, sat: -3, bright: 2, px: 5 })
+  const l = clipLook(p.clips[0])
+  assert.equal(l.scale, 4); assert.equal(l.rot, 180); assert.equal(l.sat, 0); assert.equal(l.bright, 0.5); assert.equal(l.px, 1)
+  assert.ok(hasColor(p.clips[0])); assert.ok(hasFrame(p.clips[0]))
+})
+
+ok('los fundidos nunca pasan de la mitad del clip', () => {
+  let p = addClip(newProject(), 1, 1) // dura 1 s
+  p = setClip(p, p.clips[0].id, { fadeIn: 3, fadeOut: 3 })
+  close(clipLook(p.clips[0]).fadeIn, 0.5); close(clipLook(p.clips[0]).fadeOut, 0.5)
+})
+
+ok('applyFilter ajusta los cuatro parámetros y none los restablece', () => {
+  let p = addClip(newProject(), 1, 5)
+  p = applyFilter(p, p.clips[0].id, 'bw')
+  assert.equal(p.clips[0].filter, 'bw'); assert.equal(clipLook(p.clips[0]).sat, FILTERS.bw.sat)
+  p = applyFilter(p, p.clips[0].id, 'none')
+  assert.equal(hasColor(p.clips[0]), false)
+  assert.equal(applyFilter(p, p.clips[0].id, 'inventado'), p)
+})
+
+ok('setTransition pone fundido a ambos lados de la unión y 0 lo quita', () => {
+  let p = addClip(addClip(newProject(), 1, 4), 2, 4)
+  p = setTransition(p, 0, 0.6)
+  close(transitionAt(p, 0), 0.6); close(p.clips[0].fadeOut ?? 0, 0.6); close(p.clips[1].fadeIn ?? 0, 0.6)
+  p = setTransition(p, 0, 0)
+  assert.equal(transitionAt(p, 0), 0)
+  assert.equal(setTransition(p, 1, 1), p) // no hay clip siguiente
+})
+
+ok('audios: se agregan con su duración, se mueven, se recortan y se quitan', () => {
+  let p = addClip(newProject(), 1, 10)
+  const r = addAudio(p, 'a.mp3', 'a', 'sfx', 8, 5) // solo caben 2 s
+  p = r.project
+  close(p.audios![0].start, 8); close(p.audios![0].duration, 2)
+  p = moveAudio(p, r.selectId, 99); close(p.audios![0].start, 8)
+  p = moveAudio(p, r.selectId, 1); close(p.audios![0].start, 1)
+  p = setAudio(p, r.selectId, { duration: 1, fadeIn: 5, volume: 3 })
+  close(p.audios![0].fadeIn, 0.5); assert.equal(p.audios![0].volume, 1)
+  p = removeAudio(p, r.selectId); assert.equal(p.audios!.length, 0)
+})
+
+ok('normalize recorta los audios si el video se acorta y los quita si queda vacío', () => {
+  let p = addClip(newProject(), 1, 10)
+  p = addAudio(p, 'a.mp3', 'a', 'voice', 2).project // 2..10
+  p = trimClip(p, p.clips[0].id, 'end', 5, 10)
+  close(p.audios![0].duration, 3)
+  p = removeClip(p, p.clips[0].id)
+  assert.equal(p.audios!.length, 0)
+})
+
+ok('splitCaptions corta por palabras y por puntuación', () => {
+  assert.deepEqual(splitCaptions('Hola mundo. Esto es una prueba de subtitulos largos para el video', 4), ['Hola mundo.', 'Esto es una prueba', 'de subtitulos largos para', 'el video'])
+  assert.deepEqual(splitCaptions('  ', 4), [])
+  assert.deepEqual(splitCaptions('uno', 4), ['uno'])
+})
+
+ok('captionsFromText reparte las frases sin huecos ni solapes dentro del rango', () => {
+  const p = addClip(newProject(), 1, 10)
+  const r = captionsFromText(p, 'Primera frase corta. Segunda frase un poco mas larga que la primera. Tercera.', DEFAULT_TEXT_STYLE, { from: 2, to: 8, maxWords: 4 })
+  const ts = r.project.texts
+  assert.ok(ts.length >= 3 && ts.length === r.ids.length)
+  close(ts[0].start, 2)
+  for (let i = 1; i < ts.length; i++) close(ts[i].start, ts[i - 1].start + ts[i - 1].duration)
+  close(ts[ts.length - 1].start + ts[ts.length - 1].duration, 8)
+  assert.ok(ts[1].duration > ts[0].duration * 0.5)
+  assert.equal(captionsFromText(newProject(), 'hola', DEFAULT_TEXT_STYLE).ids.length, 0) // sin clips no hay dónde ponerlos
 })
 
 console.log(`\n${passed} pruebas del editor OK`)

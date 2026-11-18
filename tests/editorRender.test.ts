@@ -109,6 +109,73 @@ try {
     assert.ok(near(await pixel(two, 0.5, 540, 960), [255, 255, 255]))
   })
 
+  const one = (clip: object, over: object = {}, name = 'look.mp4'): Parameters<typeof renderEditor>[0] => job({
+    clips: [{ path: red, srcStart: 0, srcEnd: 4, speed: 1, volume: 1, hasAudio: true, ...clip }], texts: [], outPath: join(dir, name), tmpDir: join(dir, 'tmp-' + name), ...over
+  })
+  const lum = (c: [number, number, number]): number => (c[0] + c[1] + c[2]) / 3
+
+  await ok('fundido de entrada y de salida (imagen y sonido)', async () => {
+    const o = join(dir, 'fade.mp4')
+    await renderEditor(one({ fadeIn: 1, fadeOut: 1 }, {}, 'fade.mp4'))
+    const a = await pixel(o, 0.05, 100, 100); const b = await pixel(o, 2, 100, 100); const c = await pixel(o, 3.95, 100, 100)
+    assert.ok(lum(a) < 60, 'empieza casi negro ' + a)
+    assert.ok(near(b, [255, 0, 0]), 'rojo pleno en el centro')
+    assert.ok(lum(c) < 60, 'termina casi negro ' + c)
+    assert.ok(await maxVolume(o, 3.8, 4) < (await maxVolume(o, 1.5, 2.5)) - 10, 'el sonido baja al final')
+  })
+
+  await ok('saturación 0 deja el clip en grises y el brillo lo aclara', async () => {
+    const o = join(dir, 'gray.mp4')
+    await renderEditor(one({ sat: 0 }, {}, 'gray.mp4'))
+    const g = await pixel(o, 1, 100, 100)
+    assert.ok(Math.max(...g) - Math.min(...g) < 12, 'gris ' + g)
+    const o2 = join(dir, 'bright.mp4')
+    await renderEditor(one({ bright: 0.3, sat: 0 }, {}, 'bright.mp4'))
+    assert.ok(lum(await pixel(o2, 1, 100, 100)) > lum(g) + 20)
+  })
+
+  await ok('encuadre: zoom 0,5 deja bordes negros y px desplaza el clip', async () => {
+    const o = join(dir, 'small.mp4')
+    await renderEditor(one({ scale: 0.5 }, {}, 'small.mp4'))
+    assert.ok(near(await pixel(o, 1, 540, 960), [255, 0, 0]), 'centro rojo')
+    assert.ok(lum(await pixel(o, 1, 20, 20)) < 40, 'esquina negra')
+    const o2 = join(dir, 'moved.mp4')
+    await renderEditor(one({ scale: 0.5, px: 0.25 }, {}, 'moved.mp4'))
+    assert.ok(near(await pixel(o2, 1, 540 + 270, 960), [255, 0, 0]), 'rojo desplazado a la derecha')
+    assert.ok(lum(await pixel(o2, 1, 540 - 400, 960)) < 40, 'a la izquierda queda negro')
+  })
+
+  await ok('encuadre: giro 45° con espejo exporta 1080x1920 y conserva el centro', async () => {
+    const o = join(dir, 'rot.mp4')
+    await renderEditor(one({ rot: 45, flip: true, scale: 0.6 }, {}, 'rot.mp4'))
+    const info = await probe(o)
+    assert.equal(info.width, 1080); assert.equal(info.height, 1920)
+    assert.ok(near(await pixel(o, 1, 540, 960), [255, 0, 0]))
+    assert.ok(lum(await pixel(o, 1, 10, 10)) < 40)
+  })
+
+  await ok('giro positivo = sentido horario (izquierda arriba) y espejo', async () => {
+    const split = join(dir, 'split.mp4')
+    await ff(['-f', 'lavfi', '-i', 'color=c=red:s=360x1280:r=30:d=2', '-f', 'lavfi', '-i', 'color=c=blue:s=360x1280:r=30:d=2', '-filter_complex', '[0][1]hstack', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', split])
+    const o = join(dir, 'rot90.mp4')
+    await renderEditor(one({ path: split, srcEnd: 2, rot: 90, hasAudio: false }, {}, 'rot90.mp4'))
+    assert.ok(near(await pixel(o, 0.8, 540, 600), [255, 0, 0]), 'rojo arriba')
+    assert.ok(near(await pixel(o, 0.8, 540, 1300), [0, 0, 255]), 'azul abajo')
+    const o2 = join(dir, 'flip.mp4')
+    await renderEditor(one({ path: split, srcEnd: 2, flip: true, hasAudio: false }, {}, 'flip.mp4'))
+    assert.ok(near(await pixel(o2, 0.8, 200, 960), [0, 0, 255]) && near(await pixel(o2, 0.8, 900, 960), [255, 0, 0]), 'espejo')
+  })
+
+  await ok('pistas de audio con inicio propio suenan solo desde ese instante', async () => {
+    const tone = join(dir, 'tone.mp3')
+    await ff(['-f', 'lavfi', '-i', 'sine=frequency=330:d=3', tone])
+    const o = join(dir, 'aud.mp4')
+    await renderEditor(one({ volume: 0 }, { audios: [{ path: tone, start: 2, duration: 1, volume: 1, fadeIn: 0, fadeOut: 0 }] }, 'aud.mp4'))
+    assert.ok(await maxVolume(o, 0.2, 1.8) < -60, 'silencio antes del inicio')
+    assert.ok(await maxVolume(o, 2.1, 2.9) > -40, 'suena desde 2 s')
+    assert.ok(await maxVolume(o, 3.2, 3.9) < -60, 'se corta tras su duración')
+  })
+
   await ok('cancelar no deja archivos a medias', async () => {
     let cancelled = false
     const c = join(dir, 'cancel.mp4')
