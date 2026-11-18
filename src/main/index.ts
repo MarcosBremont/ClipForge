@@ -13,6 +13,7 @@ import * as db from './db'
 import { detectScenes } from './ffmpeg'
 import { cancelJob, emitProgress, endJob, newJob, pool } from './jobs'
 import { importPaths, importUrl, verifyLibrary } from './library'
+import { renderEditor } from './editorRender'
 import { availableHwEncoders, makeProxy, renderVideo } from './render'
 import * as updater from './updater'
 
@@ -160,6 +161,53 @@ function startRender(req: RenderRequest): string {
   return jobId
 }
 
+// ---------- exportación del editor de video ----------
+export interface EditorExportRequest {
+  name: string
+  clips: Array<{ videoId: number; srcStart: number; srcEnd: number; speed: number; volume: number }>
+  texts: Array<{ png: Uint8Array; start: number; end: number }>
+  music: { path: string; volume: number } | null
+  fps: 30 | 60
+  quality: 'alta' | 'media' | 'rapida'
+}
+
+function startEditorExport(req: EditorExportRequest): string {
+  const { id: jobId, ctl } = newJob('render')
+  const label = 'Exportando desde el editor'
+  void (async () => {
+    try {
+      if (!req.clips.length) throw new Error('La línea de tiempo está vacía')
+      const outDir = getAppSettings().outputDir
+      mkdirSync(outDir, { recursive: true })
+      const byId = new Map(db.getVideos([...new Set(req.clips.map((c) => c.videoId))]).map((x) => [x.id, x]))
+      const clips = req.clips.map((c) => {
+        const v = byId.get(c.videoId)
+        if (!v) throw new Error('Un clip usa un video que ya no está en la biblioteca')
+        if (!existsSync(v.path)) throw new Error(`No se encuentra el archivo: ${v.name}`)
+        return { path: v.path, srcStart: c.srcStart, srcEnd: Math.min(c.srcEnd, v.duration), speed: c.speed, volume: c.volume, hasAudio: v.hasAudio }
+      })
+      const hw = getAppSettings().hwAccel ? (await availableHwEncoders())[0] : undefined
+      const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
+      const outPath = join(outDir, `${slug(req.name)}_${stamp}.mp4`)
+      const tmpDir = join(dir('tmp'), jobId)
+      emitProgress({ jobId, kind: 'render', label, done: 0, total: 1000, status: 'running', message: 'Renderizando' })
+      const r = await renderEditor({
+        clips, texts: req.texts.map((t) => ({ png: Buffer.from(t.png), start: t.start, end: t.end })), music: req.music,
+        fps: req.fps, quality: req.quality, outPath, tmpDir,
+        onProgress: (f) => emitProgress({ jobId, kind: 'render', label, done: Math.round(f * 1000), total: 1000, status: 'running', message: 'Renderizando' }),
+        onSpawn: (p) => { ctl.procs.add(p); p.on('close', () => ctl.procs.delete(p)) },
+        isCancelled: () => ctl.cancelled
+      }, hw)
+      rmSync(tmpDir, { recursive: true, force: true })
+      const outId = db.recordOutput({ projectId: null, path: outPath, text: req.name, duration: r.duration, size: r.size, combo: `editor-${Date.now().toString(36)}`, segments: [] })
+      emitProgress({ jobId, kind: 'render', label, done: 1000, total: 1000, status: 'done', result: { outputs: [{ path: outPath, id: outId }], errors: [] } })
+    } catch (e) {
+      emitProgress({ jobId, kind: 'render', label, done: 0, total: 1000, status: ctl.cancelled ? 'cancelled' : 'error', message: ctl.cancelled ? undefined : e instanceof Error ? e.message : String(e) })
+    } finally { endJob(jobId) }
+  })()
+  return jobId
+}
+
 // ---------- análisis de escenas (local) ----------
 function analyzeScenes(libraryId: number): string {
   const { id: jobId, ctl } = newJob('analyze')
@@ -270,6 +318,11 @@ function registerIpc(): void {
   })
 
   h('render:start', (req: RenderRequest) => startRender(req))
+  h('editor:export', (req: EditorExportRequest) => startEditorExport(req))
+  h('editor:list', () => db.listEditorProjects())
+  h('editor:get', (id: number) => db.getEditorProject(id))
+  h('editor:save', (p: { id?: number | null; name: string; data: string }) => db.saveEditorProject(p))
+  h('editor:delete', (id: number) => db.deleteEditorProject(id))
   h('job:cancel', (id: string) => cancelJob(id))
 
   h('project:list', () => db.listProjects())

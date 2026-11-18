@@ -88,6 +88,102 @@ export async function runE2E(win: BrowserWindow, work: string): Promise<void> {
     const pid = await js<number>(`window.api.invoke('project:save', { name: 'E2E', library: ${libId}, text: 'hola', plan: ${JSON.stringify(plan)} })`)
     const pj = await js<{ text: string; plan: { segments: unknown[] } }>(`window.api.invoke('project:get', ${pid})`)
     check('proyecto se guarda y recupera con su plan', pj.text === 'hola' && pj.plan.segments.length === plan.segments.length)
+
+    // ---------- Editor de video: interacción real con la interfaz ----------
+    say('— Editor de video —')
+    const vl = await js<{ items: Array<{ id: number; dupOf: number | null }> }>(`window.api.invoke('lib:videos', ${libId}, {})`)
+    const ids = vl.items.filter((v) => !v.dupOf).slice(0, 3).map((v) => v.id)
+    await js(`(async () => { const c = window.__clipforge; const ed = c.editor.getState(); ed.newProject(); const vs = await window.api.invoke('video:getMany', ${JSON.stringify(ids)}); vs.forEach((v) => ed.addVideo(v)); c.store.getState().go('editor') })()`)
+    await sleep(1800); await shot('editor-1')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ed = (expr: string): Promise<any> => js(`(() => { const c = window.__clipforge; const s = c.editor.getState(); const p = s.project; return ${expr} })()`)
+    const fire = (sel: string, type: string, dx: number, where: 'center' | 'right' | 'left' = 'center', target: 'el' | 'window' = 'el'): Promise<void> =>
+      js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) throw new Error('no existe ' + ${JSON.stringify(sel)}); const r = el.getBoundingClientRect(); const w = ${JSON.stringify(where)}; const x = (w === 'right' ? r.right - 3 : w === 'left' ? r.left + 3 : r.left + r.width / 2) + ${dx}; const y = r.top + r.height / 2; const t = ${JSON.stringify(target)} === 'window' ? window : el; t.dispatchEvent(new PointerEvent(${JSON.stringify(type)}, { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1, isPrimary: true })) })()`)
+    const key = (k: string, mod = false): Promise<void> => js(`window.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(k)}, ctrlKey: ${mod}, bubbles: true }))`)
+    const total0: number = await ed('c.E.totalDuration(p)')
+    check('el editor carga los 3 videos en la línea de tiempo', (await ed('p.clips.length')) === 3 && total0 > 5, `total=${total0.toFixed(1)}`)
+    check('la página del editor se dibuja (clips y vista previa)', (await js<number>(`document.querySelectorAll('.edclip').length`)) === 3 && (await js<boolean>(`!!document.querySelector('.edphone video')`)))
+
+    // Dividir con la tecla S
+    await ed('s.seek(1.5)'); await sleep(200)
+    await key('s')
+    check('S divide el clip bajo la cabeza de reproducción (4 clips, misma duración)', (await ed('p.clips.length')) === 4 && Math.abs((await ed('c.E.totalDuration(p)')) - total0) < 0.01)
+
+    // Recortar arrastrando el borde derecho del 1.er clip 0,5 s hacia la izquierda
+    const pps: number = await ed('s.pps')
+    const before: number = await ed('c.E.clipDur(p.clips[0])')
+    await fire('.edclip:nth-child(1) .h.r', 'pointerdown', 0, 'right')
+    await fire('.edclip:nth-child(1) .h.r', 'pointermove', -0.5 * pps, 'right', 'window')
+    await fire('.edclip:nth-child(1) .h.r', 'pointerup', -0.5 * pps, 'right', 'window')
+    const after: number = await ed('c.E.clipDur(p.clips[0])')
+    check('arrastrar el borde recorta el clip (≈0,5 s menos)', Math.abs(before - after - 0.5) < 0.05, `${before.toFixed(2)} → ${after.toFixed(2)}`)
+
+    // Reordenar arrastrando el 3.er clip hacia el inicio
+    const ordBefore: string = await ed('p.clips.map((x) => x.id).join()')
+    const third: string = await ed('p.clips[2].id')
+    await fire('.edclip:nth-child(3)', 'pointerdown', 0)
+    await fire('.edclip:nth-child(3)', 'pointermove', -600, 'center', 'window')
+    await fire('.edclip:nth-child(3)', 'pointerup', -600, 'center', 'window')
+    const ordAfter: string = await ed('p.clips.map((x) => x.id).join()')
+    check('arrastrar un clip cambia el orden', ordBefore !== ordAfter && ordAfter.split(',').indexOf(third) < 2, `posición ${ordAfter.split(',').indexOf(third)}`)
+
+    // Velocidad desde el inspector (clic en el chip 2×)
+    await fire('.edclip:nth-child(2)', 'pointerdown', 0); await fire('.edclip:nth-child(2)', 'pointerup', 0, 'center', 'window'); await sleep(250)
+    const d2: number = await ed('c.E.clipDur(p.clips[1])')
+    await js(`[...document.querySelectorAll('.edright .chip')].find((c) => c.textContent === '2×').click()`); await sleep(250)
+    const d2b: number = await ed('c.E.clipDur(p.clips[1])')
+    check('el chip 2× duplica la velocidad (la mitad de duración)', Math.abs(d2b - d2 / 2) < 0.02, `${d2.toFixed(2)} → ${d2b.toFixed(2)}`)
+
+    // Texto con la tecla T + edición en el inspector
+    await ed('s.seek(0.4)'); await sleep(150)
+    await key('t'); await sleep(300)
+    await js(`(() => { const ta = document.querySelector('.edright textarea'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(ta, 'Hola editor'); ta.dispatchEvent(new Event('input', { bubbles: true })) })()`); await sleep(250)
+    check('T crea un texto y el inspector lo edita', (await ed('p.texts.length')) === 1 && (await ed('p.texts[0].text')) === 'Hola editor')
+    check('el texto empieza donde estaba la cabeza de reproducción', Math.abs((await ed('p.texts[0].start')) - 0.4) < 0.05)
+
+    // Mover el texto arrastrándolo sobre la vista previa
+    const x0: number = await ed('p.texts[0].style.x'); const y0: number = await ed('p.texts[0].style.y')
+    await js(`(() => { const st = document.querySelector('.edphone'); const b = document.querySelector('.edbox').getBoundingClientRect(); const x = b.left + b.width / 2; const y = b.top + b.height / 2; const f = (t, dx, dy) => st.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, clientX: x + dx, clientY: y + dy, pointerId: 1, isPrimary: true })); f('pointerdown', 0, 0); f('pointermove', 40, 90); f('pointerup', 40, 90) })()`)
+    await sleep(250)
+    const x1: number = await ed('p.texts[0].style.x'); const y1: number = await ed('p.texts[0].style.y')
+    check('arrastrar el texto en la vista previa lo mueve', x1 > x0 + 0.02 && y1 > y0 + 0.02, `(${x0.toFixed(2)},${y0.toFixed(2)}) → (${x1.toFixed(2)},${y1.toFixed(2)})`)
+    await shot('editor-2')
+
+    // Deshacer / rehacer
+    await key('z', true); await sleep(150)
+    check('Ctrl+Z deshace el movimiento del texto', Math.abs((await ed('p.texts[0].style.x')) - x0) < 0.01)
+    await key('y', true); await sleep(150)
+    check('Ctrl+Y lo rehace', Math.abs((await ed('p.texts[0].style.x')) - x1) < 0.01)
+
+    // Reproducción: la cabeza avanza
+    await key(' '); await sleep(1500)
+    const ph: number = await ed('s.playhead')
+    await key(' ')
+    check('Espacio reproduce y la cabeza de reproducción avanza', ph > 0.9, `playhead=${ph.toFixed(2)}`)
+
+    // Exportar desde el botón y verificar el archivo
+    const totalEd: number = await ed('c.E.totalDuration(p)')
+    type RJ = { status: string; result?: { outputs: Array<{ path: string }> }; message?: string }
+    const waitRender = (): Promise<RJ> => js<RJ>(`new Promise((res) => { const off = window.api.onJob((p) => { if (p.kind === 'render' && p.status !== 'running') { off(); res(p) } }) })`)
+    const jobPromise = waitRender()
+    await js(`document.querySelector('.edhead button.primary').click()`)
+    const er = await jobPromise
+    check('exportar desde el editor termina', er.status === 'done', er.message ?? '')
+    const eo = er.result?.outputs[0]?.path
+    if (eo) {
+      const pi = await probe(eo)
+      check('el video del editor es 1080x1920 H.264 con audio y la duración de la línea de tiempo', pi.width === 1080 && pi.height === 1920 && pi.codec === 'h264' && pi.hasAudio && Math.abs(pi.duration - totalEd) < 0.25, `${pi.width}x${pi.height} ${pi.duration.toFixed(2)}s esperado ${totalEd.toFixed(2)}s`)
+      const md5 = async (f: string, t: number): Promise<string> => (await run(ffmpegPath(), ['-v', 'error', '-ss', String(t), '-i', f, '-frames:v', '1', '-f', 'md5', '-'])).stdout.trim()
+      // sin el texto el mismo instante debe verse distinto
+      await ed('s.apply((q) => c.E.removeText(q, q.texts[0].id))')
+      const jp2 = waitRender()
+      await js(`document.querySelector('.edhead button.primary').click()`)
+      const er2 = await jp2
+      const eo2 = er2.result?.outputs[0]?.path
+      check('la versión sin texto también se exporta', !!eo2)
+      if (eo2) check('el texto está realmente dibujado en el video exportado (mismo instante, imagen distinta)', (await md5(eo, 1.2)) !== (await md5(eo2, 1.2)))
+    }
+    await js(`window.__clipforge.store.getState().go('editor')`); await sleep(500); await shot('editor-3')
   } catch (e) {
     say('EXCEPCION ' + (e instanceof Error ? e.stack : String(e))); failed++
   }

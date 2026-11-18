@@ -5,6 +5,7 @@ import UpdateBox from './components/UpdateBox'
 import Home from './pages/Home'
 import Library from './pages/Library'
 import Create from './pages/Create'
+import Editor from './pages/Editor'
 import Projects from './pages/Projects'
 import Generated from './pages/Generated'
 import Templates from './pages/Templates'
@@ -12,7 +13,7 @@ import AI from './pages/AI'
 import Settings from './pages/Settings'
 
 const NAV: Array<[Page, string, string]> = [
-  ['inicio', '🏠', 'Inicio'], ['biblioteca', '🎞️', 'Biblioteca de videos'], ['crear', '✨', 'Crear video'], ['proyectos', '📁', 'Proyectos'],
+  ['inicio', '🏠', 'Inicio'], ['biblioteca', '🎞️', 'Biblioteca de videos'], ['crear', '✨', 'Crear video'], ['editor', '✂️', 'Editor de video'], ['proyectos', '📁', 'Proyectos'],
   ['generados', '🎬', 'Videos generados'], ['plantillas', '🔤', 'Plantillas de texto'], ['ia', '🤖', 'Inteligencia artificial'], ['config', '⚙️', 'Configuración']
 ]
 
@@ -50,7 +51,7 @@ export default function App(): React.JSX.Element {
   const { page, go, toast } = useStore()
   useEffect(() => initJobListener(), [])
   useEffect(() => initUpdateListener(), [])
-  const view = { inicio: <Home />, biblioteca: <Library />, crear: <Create />, proyectos: <Projects />, generados: <Generated />, plantillas: <Templates />, ia: <AI />, config: <Settings /> }[page]
+  const view = { inicio: <Home />, biblioteca: <Library />, crear: <Create />, editor: <Editor />, proyectos: <Projects />, generados: <Generated />, plantillas: <Templates />, ia: <AI />, config: <Settings /> }[page]
   return (
     <div className="app">
       <aside className="side">
@@ -60,7 +61,7 @@ export default function App(): React.JSX.Element {
         ))}
         <div style={{ marginTop: 'auto' }}><UpdateBox compact /></div>
       </aside>
-      <main className="main">{view}</main>
+      <main className={'main' + (page === 'editor' ? ' ed-main' : '')}>{view}</main>
       <JobBar />
       {toast && <div className={'toast' + (toast.kind === 'err' ? ' err' : '')}>{toast.msg}</div>}
     </div>

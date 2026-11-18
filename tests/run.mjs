@@ -7,18 +7,20 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 const out = mkdtempSync(join(tmpdir(), 'clipforge-bundle-'))
-const file = join(out, 'engine.test.mjs')
-await build({
-  input: resolve('tests/engine.test.ts'),
-  platform: 'node',
-  resolve: { alias: { '@shared': resolve('src/shared') } },
-  external: [/^node:/, 'ffmpeg-static', 'ffprobe-static', 'electron'],
-  output: {
-    file, format: 'esm',
-    banner: "import { createRequire as __cr } from 'node:module'; const require = __cr(" + JSON.stringify(resolve('package.json')) + ');'
-  }
-})
 const req = createRequire(import.meta.url)
 const env = { ...process.env, CLIPFORGE_FFMPEG: req('ffmpeg-static'), CLIPFORGE_FFPROBE: req('ffprobe-static').path }
-const r = spawnSync(process.execPath, [file], { stdio: 'inherit', env })
-process.exit(r.status ?? 1)
+for (const name of ['editor', 'editorRender', 'engine']) {
+  const file = join(out, name + '.test.mjs')
+  await build({
+    input: resolve('tests/' + name + '.test.ts'),
+    platform: 'node',
+    resolve: { alias: { '@shared': resolve('src/shared') } },
+    external: [/^node:/, 'ffmpeg-static', 'ffprobe-static', 'electron'],
+    output: {
+      file, format: 'esm',
+      banner: "import { createRequire as __cr } from 'node:module'; const require = __cr(" + JSON.stringify(resolve('package.json')) + ');'
+    }
+  })
+  const r = spawnSync(process.execPath, [file], { stdio: 'inherit', env })
+  if (r.status !== 0) process.exit(r.status ?? 1)
+}

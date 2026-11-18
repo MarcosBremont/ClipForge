@@ -59,6 +59,23 @@ export function drawText(ctx: Ctx, text: string, st: TextStyle, scale: number): 
   ctx.restore()
 }
 
+/** Recuadro (en coordenadas del lienzo 1080×1920) que ocupa un texto: sirve para seleccionarlo y arrastrarlo en la vista previa. */
+export function measureBox(text: string, st: TextStyle): { x: number; y: number; w: number; h: number } {
+  const content = st.uppercase ? text.toUpperCase() : text
+  const ctx = new OffscreenCanvas(8, 8).getContext('2d')!
+  ctx.font = `${st.fontWeight} ${st.fontSize}px "${st.fontFamily}", sans-serif`
+  const maxW = st.maxWidth * CANVAS_W
+  const lines = wrap(ctx, content.trim() ? content : ' ', maxW)
+  const lh = st.fontSize * st.lineHeight
+  const blockH = lh * lines.length
+  const w = Math.max(40, ...lines.map((l) => ctx.measureText(l).width))
+  const cx = st.x * CANVAS_W
+  const anchorX = st.align === 'center' ? cx : st.align === 'left' ? cx - maxW / 2 : cx + maxW / 2
+  const left = st.align === 'center' ? anchorX - w / 2 : st.align === 'left' ? anchorX : anchorX - w
+  const pad = (st.outline ? st.outlineWidth : 0) + 10
+  return { x: left - pad, y: st.y * CANVAS_H - blockH / 2 - pad, w: w + 2 * pad, h: blockH + 2 * pad }
+}
+
 async function toPng(draw: (ctx: OffscreenCanvasRenderingContext2D) => void): Promise<Uint8Array> {
   await document.fonts.ready
   const c = new OffscreenCanvas(CANVAS_W, CANVAS_H)

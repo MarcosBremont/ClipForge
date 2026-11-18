@@ -41,6 +41,7 @@ export function openDb(dir: string): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_used_video ON used_segments(video_id);
     CREATE TABLE IF NOT EXISTS text_templates (id INTEGER PRIMARY KEY, name TEXT NOT NULL, style TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS editor_projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL, data TEXT NOT NULL, updated_at INTEGER NOT NULL);
   `)
   return db
 }
@@ -212,3 +213,18 @@ export function saveTemplate(name: string, style: unknown): number {
   return Number(db.prepare('INSERT INTO text_templates(name,style) VALUES(?,?)').run(name, JSON.stringify(style)).lastInsertRowid)
 }
 export function deleteTemplate(id: number): void { db.prepare('DELETE FROM text_templates WHERE id=?').run(id) }
+
+// ---------- proyectos del editor de video ----------
+export interface EditorRow { id: number; name: string; data: string; updatedAt: number }
+export function listEditorProjects(limit = 100): EditorRow[] {
+  return (db.prepare('SELECT id,name,data,updated_at AS updatedAt FROM editor_projects ORDER BY updated_at DESC LIMIT ?').all(limit) as unknown as EditorRow[])
+}
+export function getEditorProject(id: number): EditorRow | null {
+  return (db.prepare('SELECT id,name,data,updated_at AS updatedAt FROM editor_projects WHERE id=?').get(id) as unknown as EditorRow | undefined) ?? null
+}
+export function saveEditorProject(p: { id?: number | null; name: string; data: string }): number {
+  const now = Date.now()
+  if (p.id) { db.prepare('UPDATE editor_projects SET name=?,data=?,updated_at=? WHERE id=?').run(p.name, p.data, now, p.id); return p.id }
+  return Number(db.prepare('INSERT INTO editor_projects(name,data,updated_at) VALUES(?,?,?)').run(p.name, p.data, now).lastInsertRowid)
+}
+export function deleteEditorProject(id: number): void { db.prepare('DELETE FROM editor_projects WHERE id=?').run(id) }

@@ -5,11 +5,22 @@ import Player from '../components/Player'
 import { TextPreview, TextStyleEditor } from '../components/TextStyleEditor'
 import { textOverlayPng, watermarkPng } from '../textRender'
 import { useStore } from '../store'
+import { useEditor } from '../editorStore'
+import * as E from '@shared/editor'
 
 const DURATIONS = [10, 15, 20, 30, 45, 60]
 
 export default function Create(): React.JSX.Element {
   const { draft, setDraft, notify, libVersion, go, saveState } = useStore()
+  /** Convierte la selección automática en un proyecto del editor para ajustarla a mano (cortar, mover el texto, etc.). */
+  const openInEditor = (): void => {
+    if (!draft.plan) return
+    const s0 = draft.settings
+    const p = E.fromPlan(draft.plan.segments, draft.text, draft.style, s0.originalAudio, s0.fps, s0.quality, draft.text.slice(0, 40) || 'Desde un video creado')
+    if (s0.musicPath) p.music = { path: s0.musicPath, name: s0.musicPath.split(/[\\/]/).pop() ?? 'música', volume: s0.musicVolume }
+    useEditor.getState().load(p)
+    go('editor')
+  }
   const [libs, setLibs] = useState<Library[]>([])
   const [templates, setTemplates] = useState<TextTemplate[]>([])
   const [hasAI, setHasAI] = useState(false)
@@ -140,6 +151,7 @@ export default function Create(): React.JSX.Element {
               : <button className="btn" disabled={busy} onClick={preview}>👁 Generar y previsualizar</button>}
             <button className="btn primary" disabled={busy} onClick={() => exportVideos(true)}>🎬 {draft.plan ? 'Exportar este video' : 'Generar video'}{s.versions > 1 ? ` (+${s.versions - 1} versiones)` : ''}</button>
             {s.versions > 1 && draft.plan && <button className="btn" disabled={busy} onClick={() => exportVideos(false)}>Exportar {s.versions} versiones nuevas</button>}
+            {draft.plan && <button className="btn" disabled={busy} onClick={openInEditor}>✂ Abrir en el editor de video</button>}
           </div>
         </div>
       </div>

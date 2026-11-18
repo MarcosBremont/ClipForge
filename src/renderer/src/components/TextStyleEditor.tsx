@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { TextStyle } from '@shared/types'
 import { drawText, listFonts, CANVAS_H, CANVAS_W } from '../textRender'
 
-type P = { style: TextStyle; onChange: (patch: Partial<TextStyle>) => void }
+type P = { style: TextStyle; onChange: (patch: Partial<TextStyle>) => void; hideTiming?: boolean }
 
 function Num({ label, v, min, max, step = 1, set, unit = '' }: { label: string; v: number; min: number; max: number; step?: number; set: (n: number) => void; unit?: string }): React.JSX.Element {
   return (
@@ -11,7 +11,7 @@ function Num({ label, v, min, max, step = 1, set, unit = '' }: { label: string; 
   )
 }
 
-export function TextStyleEditor({ style, onChange }: P): React.JSX.Element {
+export function TextStyleEditor({ style, onChange, hideTiming }: P): React.JSX.Element {
   const [fonts, setFonts] = useState<string[]>([])
   useEffect(() => { void listFonts().then(setFonts) }, [])
   const list = fonts.includes(style.fontFamily) ? fonts : [style.fontFamily, ...fonts]
@@ -52,8 +52,8 @@ export function TextStyleEditor({ style, onChange }: P): React.JSX.Element {
           {style.outline && <div className="row"><input type="color" value={style.outlineColor} onChange={(e) => onChange({ outlineColor: e.target.value })} /><div className="grow"><Num label="Grosor" v={style.outlineWidth} min={1} max={20} set={(n) => onChange({ outlineWidth: n })} /></div></div>}
         </div>
       </div>
-      <label className="ck"><input type="checkbox" checked={style.wholeVideo} onChange={(e) => onChange({ wholeVideo: e.target.checked })} />El texto permanece durante todo el video</label>
-      {!style.wholeVideo && (
+      {!hideTiming && <label className="ck"><input type="checkbox" checked={style.wholeVideo} onChange={(e) => onChange({ wholeVideo: e.target.checked })} />El texto permanece durante todo el video</label>}
+      {!hideTiming && !style.wholeVideo && (
         <div className="grid g2">
           <label className="f"><span>Aparece en (s)</span><input type="number" min={0} step={0.5} value={style.startAt} onChange={(e) => onChange({ startAt: Math.max(0, Number(e.target.value)) })} /></label>
           <label className="f"><span>Desaparece en (s, vacío = al final)</span><input type="number" min={0} step={0.5} value={style.endAt ?? ''} onChange={(e) => onChange({ endAt: e.target.value === '' ? null : Number(e.target.value) })} /></label>

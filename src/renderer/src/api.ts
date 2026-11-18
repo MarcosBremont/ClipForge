@@ -27,6 +27,16 @@ export interface RenderRequest {
   plan: Plan | null
 }
 
+export interface EditorExportRequest {
+  name: string
+  clips: Array<{ videoId: number; srcStart: number; srcEnd: number; speed: number; volume: number }>
+  texts: Array<{ png: Uint8Array; start: number; end: number }>
+  music: { path: string; volume: number } | null
+  fps: 30 | 60
+  quality: 'alta' | 'media' | 'rapida'
+}
+export interface EditorRow { id: number; name: string; data: string; updatedAt: number }
+
 export type OutputRow = GeneratedVideo & { exists: boolean }
 
 export type UpdateState =
@@ -71,6 +81,11 @@ export const api = {
   planPick: (lib: number, s: GenSettings, plan: Plan, videoId: number, i: number | null) => inv<Plan>('plan:pick', lib, s, plan, videoId, i),
 
   render: (req: RenderRequest) => inv<string>('render:start', req),
+  editorExport: (req: EditorExportRequest) => inv<string>('editor:export', req),
+  editorList: () => inv<EditorRow[]>('editor:list'),
+  editorGet: (id: number) => inv<EditorRow | null>('editor:get', id),
+  editorSave: (p: { id?: number | null; name: string; data: string }) => inv<number>('editor:save', p),
+  editorDelete: (id: number) => inv<void>('editor:delete', id),
   cancelJob: (id: string) => inv<void>('job:cancel', id),
 
   projects: () => inv<Project[]>('project:list'),

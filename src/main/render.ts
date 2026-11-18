@@ -31,7 +31,7 @@ export async function availableHwEncoders(): Promise<string[]> {
   return encodersCache
 }
 
-function esc(n: number): string { return n.toFixed(3) }
+export function esc(n: number): string { return n.toFixed(3) }
 
 /** Construye el filter_complex. Exportado para pruebas. */
 export function buildFilter(job: Pick<RenderJob, 'segments' | 'settings' | 'style'> & { hasText: boolean; hasWm: boolean; hasMusic: boolean }): { graph: string; vLabel: string; aLabel: string | null; textIdx: number; wmIdx: number; musicIdx: number } {
@@ -73,7 +73,7 @@ export function buildFilter(job: Pick<RenderJob, 'segments' | 'settings' | 'styl
   return { graph: lines.join(';\n'), vLabel: v, aLabel, textIdx, wmIdx, musicIdx }
 }
 
-function encoderArgs(settings: GenSettings, encoder: string): string[] {
+export function encoderArgs(settings: GenSettings, encoder: string): string[] {
   const crf = settings.quality === 'alta' ? 18 : settings.quality === 'media' ? 22 : 26
   const preset = settings.quality === 'alta' ? 'medium' : settings.quality === 'media' ? 'fast' : 'veryfast'
   switch (encoder) {
@@ -85,7 +85,7 @@ function encoderArgs(settings: GenSettings, encoder: string): string[] {
   }
 }
 
-function runFfmpeg(args: string[], total: number, job: RenderJob): Promise<{ code: number; stderr: string }> {
+export function runFfmpeg(args: string[], total: number, job: Pick<RenderJob, 'onSpawn' | 'onProgress'>): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
     const p = spawn(ffmpegPath(), args, { windowsHide: true })
     job.onSpawn(p)

@@ -5,7 +5,7 @@ import {
 } from '@shared/types'
 import { api, type UpdateState } from './api'
 
-export type Page = 'inicio' | 'biblioteca' | 'crear' | 'proyectos' | 'generados' | 'plantillas' | 'ia' | 'config'
+export type Page = 'inicio' | 'biblioteca' | 'crear' | 'editor' | 'proyectos' | 'generados' | 'plantillas' | 'ia' | 'config'
 
 export interface Draft {
   projectId: number | null
