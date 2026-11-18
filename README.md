@@ -4,6 +4,8 @@ Aplicación de escritorio para **Windows 10/11 y macOS** que crea videos 9:16 (1
 
 **Todo el procesamiento es local** (FFmpeg + SQLite). La IA es opcional y nunca se necesita para editar.
 
+> **Android:** hay una versión nativa para Android en la carpeta [android/](android/) (Kotlin + Jetpack Compose + Media3). Ver [android/README.md](android/README.md).
+
 ## Qué hace
 
 | Área | Funciones |

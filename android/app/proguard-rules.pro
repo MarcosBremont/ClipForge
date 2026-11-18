@@ -1,0 +1,5 @@
+-keepattributes *Annotation*, InnerClasses, Signature
+-keep,includedescriptorclasses class com.clipforge.android.**$$serializer { *; }
+-keepclassmembers class com.clipforge.android.** { *** Companion; }
+-keepclasseswithmembers class com.clipforge.android.** { kotlinx.serialization.KSerializer serializer(...); }
+-dontwarn org.slf4j.**
