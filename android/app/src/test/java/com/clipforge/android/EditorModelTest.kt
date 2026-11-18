@@ -232,4 +232,42 @@ class EditorModelTest {
         assertEquals(8.0, ts.last().start + ts.last().duration, 0.003)
         assertNull(captionsFromText(EditorProject(), "hola", TextStyle()))
     }
+
+    @Test fun movimientosCreanYQuitanAnimacionesYFrameAtInterpola() {
+        var p = one()
+        val id = p.clips[0].id
+        assertFalse(clipLook(p.clips[0]).animated)
+        p = applyMotion(p, id, "zoomIn")
+        assertTrue(clipLook(p.clips[0]).animated); assertTrue(hasFrame(p.clips[0]))
+        val l = clipLook(p.clips[0])
+        assertEquals(1.0, frameAt(l, 0.0).first, 0.002); assertEquals(1.15, frameAt(l, 0.5).first, 0.002); assertEquals(1.3, frameAt(l, 1.0).first, 0.002); assertEquals(1.3, frameAt(l, 5.0).first, 0.002)
+        p = applyMotion(p, id, "panLeft")
+        val l2 = clipLook(p.clips[0])
+        assertEquals(0.1, frameAt(l2, 0.0).second, 0.002); assertEquals(-0.1, frameAt(l2, 1.0).second, 0.002); assertEquals(0.0, frameAt(l2, 0.5).second, 0.002)
+        p = applyMotion(p, id, "none")
+        assertFalse(clipLook(p.clips[0]).animated)
+        p = setClip(p, id, kScale = 3.0)
+        assertTrue(clipLook(p.clips[0]).animated); assertEquals(3.0, p.clips[0].kScale!!, 0.0)
+    }
+
+    @Test fun textAnimEntraYSaleConFundidoYDeslizamiento() {
+        var p = one()
+        val r = addText(p, 2.0, "hola"); p = r.project
+        val s0 = textAnim(p.texts[0], 3.0)
+        assertEquals(1.0, s0.alpha, 0.0); assertEquals(0.0, s0.dy, 0.0)
+        p = setText(p, r.selectId, anim = "up", animDur = 0.5, duration = 4.0)
+        val t = p.texts[0]
+        assertEquals(0.5, animLen(t), 0.002)
+        var a = textAnim(t, 2.0); assertEquals(0.0, a.alpha, 0.002); assertEquals(120.0, a.dy, 0.002)
+        a = textAnim(t, 2.25); assertEquals(0.5, a.alpha, 0.002); assertEquals(60.0, a.dy, 0.002)
+        a = textAnim(t, 4.0); assertEquals(1.0, a.alpha, 0.002); assertEquals(0.0, a.dy, 0.002)
+        a = textAnim(t, 5.75); assertEquals(0.5, a.alpha, 0.002); assertEquals(-60.0, a.dy, 0.002)
+        p = setText(p, r.selectId, anim = "left"); assertEquals(120.0, textAnim(p.texts[0], 2.0).dx, 0.002)
+        p = setText(p, r.selectId, anim = "fade", duration = 0.4); assertEquals(0.2, animLen(p.texts[0]), 0.002)
+    }
+
+    @Test fun addStickerCreaEmojiGrandeAnimado() {
+        val t = addSticker(one(), 1.0, "🔥").project.texts[0]
+        assertEquals("🔥", t.text); assertEquals("up", t.anim); assertTrue(t.style.fontSize >= 150f); assertFalse(t.style.outline)
+    }
 }

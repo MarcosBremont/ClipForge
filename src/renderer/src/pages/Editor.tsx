@@ -120,6 +120,15 @@ function Inspector(): React.JSX.Element {
         {slider('Giro', 'ro' + clip.id, look.rot, -180, 180, 1, (v) => Math.round(v) + '°', setC('rot', 'ro'))}
         {slider('Posición horizontal', 'px' + clip.id, look.px, -1, 1, 0.01, (v) => Math.round(v * 100) + '%', setC('px', 'px'))}
         {slider('Posición vertical', 'py' + clip.id, look.py, -1, 1, 0.01, (v) => Math.round(v * 100) + '%', setC('py', 'py'))}
+        <div className="row wrap"><span className="small muted">Movimiento:</span>
+          {([['none', 'Ninguno'], ['zoomIn', 'Zoom +'], ['zoomOut', 'Zoom −'], ['panLeft', 'Paneo ←'], ['panRight', 'Paneo →']] as const).map(([k, n]) => <span key={k} className="chip" onClick={() => apply((p) => E.applyMotion(p, clip.id, k))}>{n}</span>)}
+        </div>
+        {look.animated && <>
+          <div className="small muted">Animado: los valores de arriba son los del inicio del clip y estos los del final.</div>
+          {slider('Zoom al final', 'ks' + clip.id, look.kScale, 0.25, 4, 0.01, (v) => v.toFixed(2) + '×', (v) => (p) => E.setClip(p, clip.id, { kScale: v }))}
+          {slider('Posición X al final', 'kx' + clip.id, look.kPx, -1, 1, 0.01, (v) => Math.round(v * 100) + '%', (v) => (p) => E.setClip(p, clip.id, { kPx: v }))}
+          {slider('Posición Y al final', 'ky' + clip.id, look.kPy, -1, 1, 0.01, (v) => Math.round(v * 100) + '%', (v) => (p) => E.setClip(p, clip.id, { kPy: v }))}
+        </>}
         <div className="row wrap">
           <button className={'btn sm' + (look.flip ? ' primary' : '')} onClick={() => apply((p) => E.setClip(p, clip.id, { flip: !look.flip }))}>⇋ Espejo</button>
           <button className="btn sm" onClick={() => apply((p) => E.setClip(p, clip.id, { scale: 1, rot: 0, flip: false, px: 0, py: 0 }))}>Restablecer encuadre</button>
@@ -149,6 +158,11 @@ function Inspector(): React.JSX.Element {
           <button className="btn sm danger" onClick={() => apply((p) => E.removeText(p, text.id))}>🗑 Eliminar</button>
         </div>
         <div className="muted small">Arrastra el texto en la vista previa para moverlo. Se pega al centro cuando lo acercas.</div>
+        <label className="f"><span>Animación de entrada y salida</span>
+          <select value={text.anim ?? 'none'} onChange={(e) => apply((p) => E.setText(p, text.id, { anim: e.target.value as E.TextAnim }))}>
+            <option value="none">Ninguna</option><option value="fade">Fundido</option><option value="up">Sube</option><option value="down">Baja</option><option value="left">Desde la derecha</option><option value="right">Desde la izquierda</option>
+          </select></label>
+        {(text.anim ?? 'none') !== 'none' && slider('Duración de la animación', 'tad' + text.id, text.animDur ?? 0.4, 0.1, 1.5, 0.05, (v) => v.toFixed(2) + ' s', (v) => (p) => E.setText(p, text.id, { animDur: v }))}
         <TextStyleEditor hideTiming style={text.style} onChange={(patch) => edit('sty' + text.id + Object.keys(patch).join(), (p) => E.setText(p, text.id, { style: patch }))} />
       </div>
     )
@@ -198,6 +212,10 @@ export default function Editor(): React.JSX.Element {
   const canRedo = useEditor((s) => s.future.length > 0)
   const [projects, setProjects] = useState<EditorRow[] | null>(null)
   const [exporting, setExporting] = useState(false)
+  const [sfx, setSfx] = useState<Array<{ id: string; name: string; path: string; duration: number }> | null>(null)
+  const [rec, setRec] = useState<{ at: number; t0: number } | null>(null)
+  const recorder = useRef<{ mr: MediaRecorder; chunks: Blob[]; stream: MediaStream } | null>(null)
+  const [stickers, setStickers] = useState(false)
   const [cap, setCap] = useState<{ text: string; words: number; fromHere: boolean } | null>(null)
   const total = E.totalDuration(project)
 
@@ -236,6 +254,49 @@ export default function Editor(): React.JSX.Element {
     const name = path.split(/[\\/]/).pop() ?? 'música'
     useEditor.getState().apply((p) => ({ ...p, music: { path, name, volume: 0.8 } }))
     useEditor.getState().select({ kind: 'music', id: 'music' })
+  }
+
+  const addSfx = (x: { name: string; path: string; duration: number }): void => {
+    const st = useEditor.getState()
+    if (!st.project.clips.length) { notify('Primero agrega un video a la línea de tiempo.', 'err'); return }
+    const r = E.addAudio(st.project, x.path, x.name, 'sfx', st.playhead, x.duration)
+    st.apply(() => r.project); st.select({ kind: 'audio', id: r.selectId })
+  }
+  const addSticker = (emoji: string): void => {
+    const st = useEditor.getState()
+    if (!st.project.clips.length) { notify('Primero agrega un video a la línea de tiempo.', 'err'); return }
+    const r = E.addSticker(st.project, st.playhead, emoji)
+    st.apply(() => r.project); st.select({ kind: 'text', id: r.selectId })
+  }
+
+  /** Graba la voz con el micrófono mientras el video se reproduce; al parar queda como pista de voz en el instante donde empezó. */
+  const toggleRecord = async (): Promise<void> => {
+    if (recorder.current) { recorder.current.mr.stop(); return }
+    const st = useEditor.getState()
+    if (!st.project.clips.length) { notify('Primero agrega un video a la línea de tiempo.', 'err'); return }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mr = new MediaRecorder(stream)
+      const chunks: Blob[] = []
+      const at = st.playhead
+      mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data) }
+      mr.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop())
+        const dur = (performance.now() - t0) / 1000
+        recorder.current = null; setRec(null); useEditor.getState().setPlaying(false)
+        try {
+          const bytes = new Uint8Array(await new Blob(chunks, { type: 'audio/webm' }).arrayBuffer())
+          if (!bytes.length) { notify('No se grabó audio.', 'err'); return }
+          const path = await api.voiceSave(bytes)
+          const s2 = useEditor.getState()
+          const r = E.addAudio(s2.project, path, 'Voz grabada', 'voice', at, dur)
+          s2.apply(() => r.project); s2.select({ kind: 'audio', id: r.selectId })
+        } catch (e) { notify(errMsg(e), 'err') }
+      }
+      const t0 = performance.now()
+      recorder.current = { mr, chunks, stream }; setRec({ at, t0 })
+      mr.start(); st.setPlaying(true)
+    } catch (e) { notify('No se pudo usar el micrófono: ' + errMsg(e), 'err') }
   }
 
   const createCaptions = (): void => {
@@ -305,8 +366,8 @@ export default function Editor(): React.JSX.Element {
     if (!p.clips.length) { notify('La línea de tiempo está vacía.', 'err'); return }
     setExporting(true)
     try {
-      const texts = (await Promise.all(p.texts.map(async (t) => ({ png: await textOverlayPng(t.text, t.style), start: t.start, end: t.start + t.duration }))))
-        .filter((t): t is { png: Uint8Array; start: number; end: number } => !!t.png)
+      const texts = (await Promise.all(p.texts.map(async (t) => ({ png: await textOverlayPng(t.text, t.style), start: t.start, end: t.start + t.duration, anim: t.anim, animDur: E.animLen(t) }))))
+        .filter((t): t is { png: Uint8Array; start: number; end: number; anim: E.TextAnim | undefined; animDur: number } => !!t.png)
       await api.editorExport({
         name: p.name || 'editor', fps: p.fps, quality: p.quality, texts,
         clips: p.clips.map((c) => ({ videoId: c.videoId, srcStart: c.srcStart, srcEnd: c.srcEnd, speed: c.speed, volume: c.volume, ...E.clipLook(c) })),
@@ -338,6 +399,9 @@ export default function Editor(): React.JSX.Element {
           <button className="btn sm" onClick={addText}>＋ Texto (T)</button>
           <button className="btn sm" title="Crear subtítulos a partir de un guion" onClick={() => setCap({ text: '', words: 4, fromHere: false })}>💬 Subtítulos</button>
           <button className="btn sm" title="Música de fondo: suena en bucle durante todo el video" onClick={() => void pickMusic()}>♪ Música</button>
+          <button className="btn sm" title="Efectos de sonido incluidos" onClick={() => void api.sfxList().then(setSfx)}>🎵 Efectos</button>
+          <button className={'btn sm' + (rec ? ' danger' : '')} title="Grabar tu voz con el micrófono mientras se reproduce el video" onClick={() => void toggleRecord()}>{rec ? '⏹ Parar' : '⏺ Grabar'}</button>
+          <button className="btn sm" title="Stickers (emojis) animados" onClick={() => setStickers(true)}>😀 Stickers</button>
           <button className="btn sm" title="Efecto de sonido o audio colocado en la cabeza de reproducción" onClick={() => void pickAudio('sfx')}>🔊 Audio</button>
           <button className="btn sm" title="Pista de voz (archivo) colocada en la cabeza de reproducción" onClick={() => void pickAudio('voice')}>🎙 Voz</button>
         </div>
@@ -364,6 +428,38 @@ export default function Editor(): React.JSX.Element {
       </div>
 
       <div className="edbottom"><EditorTimeline /></div>
+
+      {sfx && (
+        <div className="modal-bg" onClick={() => setSfx(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="row sp" style={{ marginBottom: 10 }}><h2 style={{ margin: 0 }}>Efectos de sonido</h2><button className="btn" onClick={() => setSfx(null)}>Cerrar</button></div>
+            <div className="muted small" style={{ marginBottom: 8 }}>Se agregan en la cabeza de reproducción. Sintetizados en tu equipo: sin derechos de autor.</div>
+            {sfx.map((x) => (
+              <div className="row sp card" key={x.id} style={{ marginBottom: 6 }}>
+                <b>{x.name}</b>
+                <div className="row">
+                  <button className="btn sm" onClick={() => { void new Audio(mediaUrl(x.path)).play() }}>▶ Oír</button>
+                  <button className="btn sm primary" data-sfx={x.id} onClick={() => { addSfx(x); setSfx(null) }}>Agregar</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {stickers && (
+        <div className="modal-bg" onClick={() => setStickers(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="row sp" style={{ marginBottom: 10 }}><h2 style={{ margin: 0 }}>Stickers</h2><button className="btn" onClick={() => setStickers(false)}>Cerrar</button></div>
+            <div className="muted small" style={{ marginBottom: 8 }}>Aparecen en la cabeza de reproducción con una animación de entrada. Muévelos en la vista previa como cualquier texto.</div>
+            <div className="chips" style={{ fontSize: 28 }}>
+              {['🔥', '😂', '😍', '🤯', '👀', '💯', '✨', '❤️', '👍', '👏', '🎉', '😎', '🚀', '💥', '⭐', '😱', '🙌', '💪', '🤣', '😮'].map((e) => (
+                <span key={e} className="chip" data-sticker={e} onClick={() => { addSticker(e); setStickers(false) }}>{e}</span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {cap && (
         <div className="modal-bg" onClick={() => setCap(null)}>

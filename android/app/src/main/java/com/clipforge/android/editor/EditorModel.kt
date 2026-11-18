@@ -20,7 +20,8 @@ data class EClip(
     // Aspecto del clip (mismas reglas que el editor de escritorio; ver clipLook)
     val fadeIn: Double = 0.0, val fadeOut: Double = 0.0, // s: fundido desde/hacia negro (imagen y sonido)
     val bright: Double = 0.0, val contrast: Double = 1.0, val sat: Double = 1.0, val warmth: Double = 0.0, val filter: String? = null,
-    val scale: Double = 1.0, val rot: Double = 0.0, val flip: Boolean = false, val px: Double = 0.0, val py: Double = 0.0 // zoom, giro (° horario), espejo, desplazamiento (fracción del cuadro)
+    val scale: Double = 1.0, val rot: Double = 0.0, val flip: Boolean = false, val px: Double = 0.0, val py: Double = 0.0, // zoom, giro (° horario), espejo, desplazamiento (fracción del cuadro)
+    val kScale: Double? = null, val kPx: Double? = null, val kPy: Double? = null // animación: valores al FINAL del clip (los de arriba son los del inicio)
 )
 
 /** Una pista de audio colocada en la línea de tiempo (efectos, voz, música extra). Suena una vez desde [start]. */
@@ -29,7 +30,7 @@ data class EAudio(val id: String, val uri: String, val name: String, val kind: S
 
 /** Un texto con su tiempo. Posición, tamaño y estilo viven en [style] (x, y = centro del bloque, 0..1). */
 @Serializable
-data class EText(val id: String, val text: String, val start: Double, val duration: Double, val style: TextStyle = TextStyle())
+data class EText(val id: String, val text: String, val start: Double, val duration: Double, val style: TextStyle = TextStyle(), val anim: String = "none", val animDur: Double = 0.4) // anim: none | fade | up | down | left | right
 
 @Serializable
 data class EMusic(val uri: String, val name: String, val volume: Double = 0.8)
@@ -81,15 +82,27 @@ val FILTERS: Map<String, List<Double>> = mapOf( // brillo, contraste, saturació
     "cool" to listOf(0.0, 1.05, 1.0, -0.5), "bw" to listOf(0.0, 1.1, 0.0, 0.0), "vintage" to listOf(0.03, 0.9, 0.7, 0.35), "dramatic" to listOf(-0.03, 1.35, 0.9, -0.1)
 )
 
-data class ClipLook(val fadeIn: Double, val fadeOut: Double, val bright: Double, val contrast: Double, val sat: Double, val warmth: Double, val scale: Double, val rot: Double, val flip: Boolean, val px: Double, val py: Double)
+data class ClipLook(
+    val fadeIn: Double, val fadeOut: Double, val bright: Double, val contrast: Double, val sat: Double, val warmth: Double,
+    val scale: Double, val rot: Double, val flip: Boolean, val px: Double, val py: Double,
+    val kScale: Double = scale, val kPx: Double = px, val kPy: Double = py
+) {
+    val animated: Boolean get() = kScale != scale || kPx != px || kPy != py
+}
+
+/** Zoom y posición del clip en la fracción [u] (0 = inicio, 1 = final) de su duración. */
+fun frameAt(l: ClipLook, u: Double): Triple<Double, Double, Double> {
+    val k = clamp(u, 0.0, 1.0)
+    return Triple(l.scale + (l.kScale - l.scale) * k, l.px + (l.kPx - l.px) * k, l.py + (l.kPy - l.py) * k)
+}
 
 /** Aspecto completo del clip. Los fundidos nunca pasan de la mitad del clip. */
 fun clipLook(c: EClip): ClipLook {
     val half = clipDur(c) / 2
-    return ClipLook(clamp(c.fadeIn, 0.0, half), clamp(c.fadeOut, 0.0, half), c.bright, c.contrast, c.sat, c.warmth, c.scale, c.rot, c.flip, c.px, c.py)
+    return ClipLook(clamp(c.fadeIn, 0.0, half), clamp(c.fadeOut, 0.0, half), c.bright, c.contrast, c.sat, c.warmth, c.scale, c.rot, c.flip, c.px, c.py, c.kScale ?: c.scale, c.kPx ?: c.px, c.kPy ?: c.py)
 }
 fun hasColor(c: EClip) = c.bright != 0.0 || c.contrast != 1.0 || c.sat != 1.0 || c.warmth != 0.0
-fun hasFrame(c: EClip) = c.scale != 1.0 || c.rot != 0.0 || c.flip || c.px != 0.0 || c.py != 0.0
+fun hasFrame(c: EClip) = c.scale != 1.0 || c.rot != 0.0 || c.flip || c.px != 0.0 || c.py != 0.0 || clipLook(c).animated
 
 /** Mantiene textos y audios dentro de la duración del video (tras cortar, borrar o cambiar velocidades). */
 fun normalize(p0: EditorProject): EditorProject {
@@ -166,7 +179,8 @@ fun duplicateClip(p: EditorProject, id: String): Edit? {
 fun setClip(
     p: EditorProject, id: String, speed: Double? = null, volume: Double? = null,
     fadeIn: Double? = null, fadeOut: Double? = null, bright: Double? = null, contrast: Double? = null, sat: Double? = null, warmth: Double? = null,
-    filter: String? = null, scale: Double? = null, rot: Double? = null, flip: Boolean? = null, px: Double? = null, py: Double? = null
+    filter: String? = null, scale: Double? = null, rot: Double? = null, flip: Boolean? = null, px: Double? = null, py: Double? = null,
+    kScale: Double? = null, kPx: Double? = null, kPy: Double? = null
 ): EditorProject =
     withClips(p, p.clips.map { c ->
         if (c.id != id) c else c.copy(
@@ -183,8 +197,26 @@ fun setClip(
             rot = rot?.let { r3(clamp(it, -180.0, 180.0)) } ?: c.rot,
             flip = flip ?: c.flip,
             px = px?.let { r3(clamp(it, -1.0, 1.0)) } ?: c.px,
-            py = py?.let { r3(clamp(it, -1.0, 1.0)) } ?: c.py
+            py = py?.let { r3(clamp(it, -1.0, 1.0)) } ?: c.py,
+            kScale = kScale?.let { r3(clamp(it, 0.25, 4.0)) } ?: c.kScale,
+            kPx = kPx?.let { r3(clamp(it, -1.0, 1.0)) } ?: c.kPx,
+            kPy = kPy?.let { r3(clamp(it, -1.0, 1.0)) } ?: c.kPy
         )
+    })
+
+/** Movimientos prediseñados (zoom/paneo de inicio a fin del clip): none, zoomIn, zoomOut, panLeft, panRight. */
+fun applyMotion(p: EditorProject, id: String, name: String): EditorProject =
+    withClips(p, p.clips.map { c ->
+        if (c.id != id) c else {
+            val b = c.copy(kScale = null, kPx = null, kPy = null)
+            when (name) {
+                "zoomIn" -> b.copy(scale = 1.0, px = 0.0, py = 0.0, kScale = 1.3, kPx = 0.0, kPy = 0.0)
+                "zoomOut" -> b.copy(scale = 1.3, px = 0.0, py = 0.0, kScale = 1.0, kPx = 0.0, kPy = 0.0)
+                "panLeft" -> b.copy(scale = 1.25, px = 0.1, py = 0.0, kScale = 1.25, kPx = -0.1, kPy = 0.0)
+                "panRight" -> b.copy(scale = 1.25, px = -0.1, py = 0.0, kScale = 1.25, kPx = 0.1, kPy = 0.0)
+                else -> b
+            }
+        }
     })
 
 /** Aplica un filtro prediseñado (ajusta brillo, contraste, saturación y calidez). */
@@ -203,6 +235,31 @@ fun transitionAt(p: EditorProject, index: Int): Double {
     val a = p.clips.getOrNull(index) ?: return 0.0
     val b = p.clips.getOrNull(index + 1) ?: return 0.0
     return min(clipLook(a).fadeOut, clipLook(b).fadeIn)
+}
+
+// ---------- animación de textos y stickers ----------
+const val ANIM_DIST = 120.0 // px (en el cuadro de 1080×1920) que recorre una animación de deslizamiento
+data class TextAnimState(val alpha: Double, val dx: Double, val dy: Double)
+
+/** Duración efectiva de la animación de un texto (nunca más de la mitad de lo que dura). */
+fun animLen(t: EText): Double = if (t.anim != "none") clamp(t.animDur, 0.1, t.duration / 2) else 0.0
+
+/** Transparencia (0..1) y desplazamiento (px del cuadro 1080×1920) de un texto en el instante [time]. Entra con la animación y sale con ella. */
+fun textAnim(t: EText, time: Double): TextAnimState {
+    val d = animLen(t)
+    if (d <= 0) return TextAnimState(1.0, 0.0, 0.0)
+    val lt = time - t.start
+    val pin = clamp(lt / d, 0.0, 1.0); val pout = clamp((t.duration - lt) / d, 0.0, 1.0)
+    val (vx, vy) = when (t.anim) { "up" -> 0.0 to 1.0; "down" -> 0.0 to -1.0; "left" -> 1.0 to 0.0; "right" -> -1.0 to 0.0; else -> 0.0 to 0.0 }
+    val off = ((1 - pin) - (1 - pout)) * ANIM_DIST
+    return TextAnimState(min(pin, pout), vx * off, vy * off)
+}
+
+/** Agrega un sticker (emoji grande) en [at], con una animación de entrada. */
+fun addSticker(p: EditorProject, at: Double, emoji: String, base: TextStyle = TextStyle()): Edit {
+    val r = addText(p, at, emoji, base.copy(fontSize = 200f, outline = false, shadow = false, x = 0.5f, y = 0.4f, uppercase = false))
+    val t = r.project.texts.first { it.id == r.selectId }
+    return Edit(setText(r.project, r.selectId, duration = min(3.0, t.duration), anim = "up", animDur = 0.4), r.selectId)
 }
 
 // ---------- pistas de audio ----------
@@ -238,9 +295,9 @@ fun addText(p: EditorProject, at: Double, text: String = "Tu texto", style: Text
     return Edit(p.copy(texts = p.texts + t), t.id)
 }
 
-fun setText(p: EditorProject, id: String, text: String? = null, start: Double? = null, duration: Double? = null, style: ((TextStyle) -> TextStyle)? = null): EditorProject =
+fun setText(p: EditorProject, id: String, text: String? = null, start: Double? = null, duration: Double? = null, style: ((TextStyle) -> TextStyle)? = null, anim: String? = null, animDur: Double? = null): EditorProject =
     normalize(p.copy(texts = p.texts.map { t ->
-        if (t.id != id) t else t.copy(text = text ?: t.text, start = start ?: t.start, duration = duration ?: t.duration, style = style?.invoke(t.style) ?: t.style)
+        if (t.id != id) t else t.copy(text = text ?: t.text, start = start ?: t.start, duration = duration ?: t.duration, style = style?.invoke(t.style) ?: t.style, anim = anim ?: t.anim, animDur = animDur ?: t.animDur)
     }))
 
 fun removeText(p: EditorProject, id: String) = p.copy(texts = p.texts.filter { it.id != id })

@@ -9,6 +9,7 @@ export async function runE2E(win: BrowserWindow, work: string): Promise<void> {
   const errors: string[] = []
   const say = (s: string): void => { log.push(s); console.log('[e2e]', s) }
   win.webContents.on('console-message', (e) => { if (e.level === 'error') errors.push(e.message) })
+  win.webContents.on('render-process-gone', (_e, d) => log.push('RENDER GONE ' + d.reason + ' ' + d.exitCode)); win.webContents.on('did-start-navigation', (_e, url) => log.push('NAV ' + url))
   const js = <T>(code: string): Promise<T> => win.webContents.executeJavaScript(code) as Promise<T>
   const shot = async (name: string): Promise<void> => { const img = await win.webContents.capturePage(); writeFileSync(join(work, name + '.png'), img.toPNG()) }
   const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
@@ -172,6 +173,24 @@ export async function runE2E(win: BrowserWindow, work: string): Promise<void> {
     await ed(`(() => { const r = c.E.addAudio(p, 'C:/no-existe/efecto.mp3', 'efecto.mp3', 'sfx', 1, 2); s.apply(() => r.project); s.select({ kind: 'audio', id: r.selectId }) })()`); await sleep(300)
     check('la pista de audio aparece en la línea de tiempo y su inspector', (await js<number>(`document.querySelectorAll('.edaudio').length`)) === 1)
     await ed(`s.apply((q) => c.E.removeAudio(q, q.audios[0].id))`)
+    // Fase 2: stickers, efectos de sonido, grabación de voz (micrófono simulado) y animaciones
+    await js(`[...document.querySelectorAll('.edleft button')].find((b) => b.textContent.includes('Stickers')).click()`); await sleep(200)
+    const nT: number = await ed('p.texts.length')
+    await js(`document.querySelector('[data-sticker]').click()`); await sleep(200)
+    check('un sticker crea un texto emoji animado', (await ed('p.texts.length')) === nT + 1 && (await ed('p.texts[p.texts.length - 1].anim')) === 'up')
+    await js(`[...document.querySelectorAll('.edleft button')].find((b) => b.textContent.includes('Efectos')).click()`); await sleep(600)
+    const nA: number = await ed('(p.audios ?? []).length')
+    await js(`document.querySelector('[data-sfx="pop"]').click()`); await sleep(300)
+    check('un efecto de sonido se agrega como pista de audio', (await ed('(p.audios ?? []).length')) === nA + 1 && (await ed('p.audios[p.audios.length - 1].name')) === 'Pop')
+    // micrófono simulado: un oscilador de WebAudio como MediaStream real (MediaRecorder graba de verdad)
+    await js(`void (navigator.mediaDevices.getUserMedia = async () => { const ac = new AudioContext(); await ac.resume(); const o = ac.createOscillator(); const d = ac.createMediaStreamDestination(); o.connect(d); o.start(); return d.stream })`)
+    await js(`[...document.querySelectorAll('.edleft button')].find((b) => b.textContent.includes('Grabar')).click()`); await sleep(1800)
+    await js(`[...document.querySelectorAll('.edleft button')].find((b) => b.textContent.includes('Parar')).click()`); await sleep(1500)
+    check('grabar voz crea una pista de voz con archivo', (await ed('p.audios.some((a) => a.kind === "voice" && a.duration > 1)')) === true, JSON.stringify(await ed('p.audios.map((a) => [a.kind, a.start, a.duration]).concat([[c.E.totalDuration(p), s.playhead]])')))
+    await ed(`s.apply((q) => c.E.applyMotion(q, q.clips[0].id, 'zoomIn'))`)
+    await ed(`s.apply((q) => c.E.setText(q, q.texts[0].id, { anim: 'fade', animDur: 0.5 }))`)
+    check('el movimiento del clip se guarda como animación', (await ed('c.E.clipLook(p.clips[0]).animated')) === true)
+
     const nTexts0: number = await ed('p.texts.length')
     await js(`[...document.querySelectorAll('.edleft button')].find((b) => b.textContent.includes('Subtítulos')).click()`); await sleep(200)
     await js(`(() => { const ta = document.querySelector('#capText'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(ta, 'Hola a todos. Este es un subtitulo de prueba para el editor'); ta.dispatchEvent(new Event('input', { bubbles: true })) })()`); await sleep(200)

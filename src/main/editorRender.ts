@@ -3,15 +3,17 @@ import type { ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { GenSettings } from '@shared/types'
+import { ANIM_DIST } from '@shared/editor'
 import { OUT_H, OUT_W, encoderArgs, esc, runFfmpeg } from './render'
 
 export interface EdClip {
   path: string; srcStart: number; srcEnd: number; speed: number; volume: number; hasAudio: boolean
   fadeIn?: number; fadeOut?: number; bright?: number; contrast?: number; sat?: number; warmth?: number
   scale?: number; rot?: number; flip?: boolean; px?: number; py?: number
+  kScale?: number; kPx?: number; kPy?: number // valores al final del clip (animación)
 }
 export interface EdAudio { path: string; start: number; duration: number; volume: number; fadeIn: number; fadeOut: number }
-export interface EdText { png: Buffer; start: number; end: number }
+export interface EdText { png: Buffer; start: number; end: number; anim?: string; animDur?: number }
 export interface EditorRenderJob {
   clips: EdClip[]
   texts: EdText[]
@@ -37,8 +39,17 @@ function lookFilters(c: EdClip, d: number, fps: number, i: number): { pre: strin
   let pre = ''
   if (bright !== 0 || contrast !== 1 || sat !== 1) pre += `,eq=brightness=${num(bright)}:contrast=${num(contrast)}:saturation=${num(sat)}`
   if (warmth !== 0) pre += `,colorchannelmixer=rr=${num(1 + 0.15 * warmth)}:bb=${num(1 - 0.15 * warmth)}`
-  const framed = scale !== 1 || rot !== 0 || flip || px !== 0 || py !== 0
+  const kScale = c.kScale ?? scale; const kPx = c.kPx ?? px; const kPy = c.kPy ?? py
+  const framed = scale !== 1 || rot !== 0 || flip || px !== 0 || py !== 0 || kScale !== scale || kPx !== px || kPy !== py
   if (!framed) return { pre, frame: '' }
+  if (kScale !== scale || kPx !== px || kPy !== py) {
+    // Animado: el zoom y la posición cambian linealmente de 0 a d segundos.
+    const S = `(${num(scale)}+(${num(kScale - scale)})*t/${esc(d)})`
+    let ga = flip ? ',hflip' : ''
+    if (rot !== 0) { const a = num((rot * Math.PI) / 180); ga += `,rotate=${a}:ow='rotw(${a})':oh='roth(${a})':c=black` }
+    ga += `,scale=w='max(2,trunc(iw*${S}/2)*2)':h='max(2,trunc(ih*${S}/2)*2)':eval=frame,setsar=1[f${i}];color=c=black:s=${OUT_W}x${OUT_H}:r=${fps}:d=${esc(d)}[bg${i}];[bg${i}][f${i}]overlay=x='(W-w)/2+(${num(px * OUT_W)}+(${num((kPx - px) * OUT_W)})*t/${esc(d)})':y='(H-h)/2+(${num(py * OUT_H)}+(${num((kPy - py) * OUT_H)})*t/${esc(d)})':shortest=1`
+    return { pre, frame: ga }
+  }
   // zoom -> giro (relleno negro) -> colocar sobre un fondo negro 1080x1920 con el desplazamiento.
   const w = Math.max(2, Math.round((OUT_W * scale) / 2) * 2); const h = Math.max(2, Math.round((OUT_H * scale) / 2) * 2)
   const ang = (rot * Math.PI) / 180
@@ -60,7 +71,7 @@ export function atempoChain(speed: number): string {
 }
 
 /** Construye el filter_complex. Exportado para pruebas. */
-export function buildEditorFilter(clips: EdClip[], textRanges: Array<{ start: number; end: number }>, music: { volume: number } | null, fps: number, audios: EdAudio[] = []): { graph: string; vLabel: string; aLabel: string; textBase: number; musicIdx: number; audioBase: number; total: number } {
+export function buildEditorFilter(clips: EdClip[], textRanges: Array<{ start: number; end: number; anim?: string; animDur?: number }>, music: { volume: number } | null, fps: number, audios: EdAudio[] = []): { graph: string; vLabel: string; aLabel: string; textBase: number; musicIdx: number; audioBase: number; total: number } {
   const n = clips.length
   const total = clips.reduce((a, c) => a + clipDur(c), 0)
   const lines: string[] = []
@@ -81,7 +92,19 @@ export function buildEditorFilter(clips: EdClip[], textRanges: Array<{ start: nu
   let v = 'vc'
   const textBase = n
   textRanges.forEach((t, k) => {
-    lines.push(`[${v}][${textBase + k}:v]overlay=0:0:format=auto:enable='between(t,${esc(t.start)},${esc(t.end)})'[vt${k}]`)
+    let src = `[${textBase + k}:v]`; let ox = '0'; let oy = '0'
+    if (t.anim && t.anim !== 'none') {
+      // Entrada y salida: fundido de la transparencia y (según la dirección) deslizamiento de ANIM_DIST px.
+      const d = Math.max(0.05, Math.min(t.animDur ?? 0.4, (t.end - t.start) / 2))
+      lines.push(`${src}format=rgba,fade=t=in:st=${esc(t.start)}:d=${esc(d)}:alpha=1,fade=t=out:st=${esc(t.end - d)}:d=${esc(d)}:alpha=1[ta${k}]`)
+      src = `[ta${k}]`
+      const dir: Record<string, [number, number]> = { up: [0, 1], down: [0, -1], left: [1, 0], right: [-1, 0] }
+      const [vx, vy] = dir[t.anim] ?? [0, 0]
+      const off = `((1-clip((t-${esc(t.start)})/${esc(d)},0,1))-(1-clip((${esc(t.end)}-t)/${esc(d)},0,1)))`
+      if (vx) ox = `${num(vx * ANIM_DIST)}*${off}`
+      if (vy) oy = `${num(vy * ANIM_DIST)}*${off}`
+    }
+    lines.push(`[${v}]${src}overlay=x='${ox}':y='${oy}':format=auto:enable='between(t,${esc(t.start)},${esc(t.end)})'[vt${k}]`)
     v = `vt${k}`
   })
   const musicIdx = music ? textBase + textRanges.length : -1

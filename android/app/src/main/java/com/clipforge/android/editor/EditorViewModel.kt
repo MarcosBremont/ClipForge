@@ -151,6 +151,58 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         apply { r.project }; select(Sel(SelKind.TEXT, r.selectId))
     }
 
+    fun addStickerHere(emoji: String) {
+        val p = project.value
+        if (p.clips.isEmpty()) { say("Primero agrega un video a la línea de tiempo."); return }
+        val r = addSticker(p, playhead.value, emoji)
+        apply { r.project }; select(Sel(SelKind.TEXT, r.selectId))
+    }
+
+    /** Efecto de sonido incluido, en la cabeza de reproducción. */
+    fun addSfx(s: com.clipforge.android.export.Sfx) {
+        val p = project.value
+        if (p.clips.isEmpty()) { say("Primero agrega un video a la línea de tiempo."); return }
+        val r = addAudio(p, Uri.fromFile(s.file).toString(), s.name, "sfx", playhead.value, s.duration)
+        apply { r.project }; select(Sel(SelKind.AUDIO, r.selectId))
+    }
+
+    // ---- grabación de voz (micrófono) mientras se reproduce el video
+    val recording = MutableStateFlow(false)
+    private var recorder: android.media.MediaRecorder? = null
+    private var recFile: java.io.File? = null
+    private var recAt = 0.0
+    private var recT0 = 0L
+
+    fun toggleRecord() = if (recording.value) stopRecord() else startRecord()
+
+    @Suppress("DEPRECATION")
+    private fun startRecord() {
+        if (project.value.clips.isEmpty()) { say("Primero agrega un video a la línea de tiempo."); return }
+        val app = getApplication<Application>()
+        val f = java.io.File(java.io.File(app.filesDir, "voices").apply { mkdirs() }, "voz_${System.currentTimeMillis()}.m4a")
+        try {
+            val r = if (android.os.Build.VERSION.SDK_INT >= 31) android.media.MediaRecorder(app) else android.media.MediaRecorder()
+            r.setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
+            r.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
+            r.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
+            r.setAudioSamplingRate(44100); r.setAudioEncodingBitRate(128_000)
+            r.setOutputFile(f.path); r.prepare(); r.start()
+            recorder = r; recFile = f; recAt = playhead.value; recT0 = System.currentTimeMillis()
+            recording.value = true; playing.value = true
+        } catch (e: Exception) { say("No se pudo usar el micrófono: ${e.message}") }
+    }
+
+    private fun stopRecord() {
+        val r = recorder; val f = recFile
+        recorder = null; recFile = null; recording.value = false; playing.value = false
+        try { r?.stop() } catch (_: Exception) { /* grabación demasiado corta */ }
+        try { r?.release() } catch (_: Exception) { }
+        val dur = (System.currentTimeMillis() - recT0) / 1000.0
+        if (f == null || !f.exists() || f.length() < 200) { say("No se grabó audio."); return }
+        val e = addAudio(project.value, Uri.fromFile(f).toString(), "Voz grabada", "voice", recAt, dur)
+        apply { e.project }; select(Sel(SelKind.AUDIO, e.selectId))
+    }
+
     /** Subtítulos a partir de un guion: se reparten desde el inicio (o desde la cabeza de reproducción) hasta el final. */
     fun addCaptions(text: String, maxWords: Int, fromPlayhead: Boolean) {
         val p = project.value
@@ -216,7 +268,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val spec = EditorSpec(
             "ClipForge_Editor_$stamp", clips,
-            p.texts.map { EditorTextSpec(it.text, it.style, (it.start * 1_000_000).toLong(), ((it.start + it.duration) * 1_000_000).toLong()) },
+            p.texts.map { EditorTextSpec(it.text, it.style, (it.start * 1_000_000).toLong(), ((it.start + it.duration) * 1_000_000).toLong(), it.anim, animLen(it)) },
             p.music?.uri, (p.music?.volume ?: 0.8).toFloat(), p.fps, p.quality,
             p.audios.map { EditorAudioSpec(it.uri, (it.start * 1000).toLong(), (it.duration * 1000).toLong(), it.volume.toFloat(), (it.fadeIn * 1000).toLong(), (it.fadeOut * 1000).toLong()) }
         )

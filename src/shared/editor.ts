@@ -12,12 +12,15 @@ export interface EClip {
   // Aspecto del clip (todos opcionales: ausente = valor por defecto; ver clipLook).
   fadeIn?: number; fadeOut?: number // s: fundido desde/hacia negro (imagen y sonido)
   bright?: number; contrast?: number; sat?: number; warmth?: number; filter?: string
+  kScale?: number; kPx?: number; kPy?: number // animación: valores al FINAL del clip (los de arriba son los del inicio); ausente = sin animar
   scale?: number; rot?: number; flip?: boolean; px?: number; py?: number // encuadre: zoom, giro (grados, sentido horario), espejo, desplazamiento (fraccion del cuadro)
 }
 /** Una pista de audio colocada en la linea de tiempo (efectos, voz, musica extra). Suena una vez desde start. */
 export interface EAudio { id: string; path: string; name: string; kind: 'music' | 'sfx' | 'voice'; start: number; duration: number; volume: number; fadeIn: number; fadeOut: number }
 /** Un texto con su tiempo. La posición, tamaño y estilo viven en `style` (x, y = centro del bloque, 0..1). */
-export interface EText { id: string; text: string; start: number; duration: number; style: TextStyle }
+export type TextAnim = 'none' | 'fade' | 'up' | 'down' | 'left' | 'right'
+export interface EText { id: string; text: string; start: number; duration: number; style: TextStyle; anim?: TextAnim; animDur?: number }
+export const ANIM_DIST = 120 // px (en el cuadro de 1080x1920) que recorre una animación de deslizamiento
 export interface EMusic { path: string; name: string; volume: number }
 export interface EditorProject {
   id: number | null
@@ -72,19 +75,26 @@ export const FILTERS: Record<string, { bright: number; contrast: number; sat: nu
   dramatic: { bright: -0.03, contrast: 1.35, sat: 0.9, warmth: -0.1 }
 }
 
-export interface ClipLook { fadeIn: number; fadeOut: number; bright: number; contrast: number; sat: number; warmth: number; scale: number; rot: number; flip: boolean; px: number; py: number }
+export interface ClipLook { fadeIn: number; fadeOut: number; bright: number; contrast: number; sat: number; warmth: number; scale: number; rot: number; flip: boolean; px: number; py: number; kScale: number; kPx: number; kPy: number; animated: boolean }
 /** Aspecto completo del clip con los valores por defecto aplicados. Los fundidos nunca pasan de la mitad del clip. */
 export function clipLook(c: EClip): ClipLook {
   const half = clipDur(c) / 2
   return {
     fadeIn: clamp(c.fadeIn ?? 0, 0, half), fadeOut: clamp(c.fadeOut ?? 0, 0, half),
     bright: c.bright ?? 0, contrast: c.contrast ?? 1, sat: c.sat ?? 1, warmth: c.warmth ?? 0,
-    scale: c.scale ?? 1, rot: c.rot ?? 0, flip: c.flip ?? false, px: c.px ?? 0, py: c.py ?? 0
+    scale: c.scale ?? 1, rot: c.rot ?? 0, flip: c.flip ?? false, px: c.px ?? 0, py: c.py ?? 0,
+    kScale: c.kScale ?? c.scale ?? 1, kPx: c.kPx ?? c.px ?? 0, kPy: c.kPy ?? c.py ?? 0,
+    animated: (c.kScale ?? c.scale ?? 1) !== (c.scale ?? 1) || (c.kPx ?? c.px ?? 0) !== (c.px ?? 0) || (c.kPy ?? c.py ?? 0) !== (c.py ?? 0)
   }
+}
+/** Zoom y posición del clip en la fracción u (0 = inicio, 1 = final) de su duración. */
+export function frameAt(c: EClip, u: number): { scale: number; px: number; py: number } {
+  const l = clipLook(c); const k = clamp(u, 0, 1)
+  return { scale: l.scale + (l.kScale - l.scale) * k, px: l.px + (l.kPx - l.px) * k, py: l.py + (l.kPy - l.py) * k }
 }
 /** Necesita correccion de color? (si no, la exportacion usa el camino rapido) */
 export const hasColor = (c: EClip): boolean => { const l = clipLook(c); return l.bright !== 0 || l.contrast !== 1 || l.sat !== 1 || l.warmth !== 0 }
-export const hasFrame = (c: EClip): boolean => { const l = clipLook(c); return l.scale !== 1 || l.rot !== 0 || l.flip || l.px !== 0 || l.py !== 0 }
+export const hasFrame = (c: EClip): boolean => { const l = clipLook(c); return l.scale !== 1 || l.rot !== 0 || l.flip || l.px !== 0 || l.py !== 0 || l.animated }
 
 /** Mantiene textos y audios dentro de la duración del video (tras cortar, borrar o cambiar velocidades). */
 export function normalize(p: EditorProject): EditorProject {
@@ -157,8 +167,8 @@ export function duplicateClip(p: EditorProject, id: string): { project: EditorPr
   return { project: withClips(p, clips), selectId: copy.id }
 }
 
-type ClipPatch = Partial<Pick<EClip, 'speed' | 'volume' | 'fadeIn' | 'fadeOut' | 'bright' | 'contrast' | 'sat' | 'warmth' | 'filter' | 'scale' | 'rot' | 'flip' | 'px' | 'py'>>
-const RANGES: Record<string, [number, number]> = { volume: [0, 1], fadeIn: [0, 3], fadeOut: [0, 3], bright: [-0.5, 0.5], contrast: [0.5, 1.5], sat: [0, 2], warmth: [-1, 1], scale: [0.25, 4], rot: [-180, 180], px: [-1, 1], py: [-1, 1] }
+type ClipPatch = Partial<Pick<EClip, 'kScale' | 'kPx' | 'kPy' | 'speed' | 'volume' | 'fadeIn' | 'fadeOut' | 'bright' | 'contrast' | 'sat' | 'warmth' | 'filter' | 'scale' | 'rot' | 'flip' | 'px' | 'py'>>
+const RANGES: Record<string, [number, number]> = { volume: [0, 1], fadeIn: [0, 3], fadeOut: [0, 3], bright: [-0.5, 0.5], contrast: [0.5, 1.5], sat: [0, 2], warmth: [-1, 1], scale: [0.25, 4], rot: [-180, 180], px: [-1, 1], py: [-1, 1], kScale: [0.25, 4], kPx: [-1, 1], kPy: [-1, 1] }
 export function setClip(p: EditorProject, id: string, patch: ClipPatch): EditorProject {
   return withClips(p, p.clips.map((c) => {
     if (c.id !== id) return c
@@ -171,6 +181,22 @@ export function setClip(p: EditorProject, id: string, patch: ClipPatch): EditorP
       else { const [lo, hi] = RANGES[k]; (n as unknown as Record<string, number>)[k] = r3(clamp(v as number, lo, hi)) }
     }
     return n
+  }))
+}
+
+/** Movimientos prediseñados (zoom/paneo de inicio a fin del clip). 'none' quita la animación. */
+export function applyMotion(p: EditorProject, id: string, name: 'none' | 'zoomIn' | 'zoomOut' | 'panLeft' | 'panRight'): EditorProject {
+  const clear = (c: EClip): EClip => { const { kScale: _a, kPx: _b, kPy: _c, ...rest } = c; return rest }
+  return withClips(p, p.clips.map((c) => {
+    if (c.id !== id) return c
+    const base = clear(c)
+    switch (name) {
+      case 'none': return base
+      case 'zoomIn': return { ...base, scale: 1, px: 0, py: 0, kScale: 1.3, kPx: 0, kPy: 0 }
+      case 'zoomOut': return { ...base, scale: 1.3, px: 0, py: 0, kScale: 1, kPx: 0, kPy: 0 }
+      case 'panLeft': return { ...base, scale: 1.25, px: 0.1, py: 0, kScale: 1.25, kPx: -0.1, kPy: 0 }
+      case 'panRight': return { ...base, scale: 1.25, px: -0.1, py: 0, kScale: 1.25, kPx: 0.1, kPy: 0 }
+    }
   }))
 }
 
@@ -190,6 +216,26 @@ export function setTransition(p: EditorProject, index: number, dur: number): Edi
 export const transitionAt = (p: EditorProject, index: number): number => {
   const a = p.clips[index]; const b = p.clips[index + 1]
   return a && b ? Math.min(clipLook(a).fadeOut, clipLook(b).fadeIn) : 0
+}
+
+// ---------- animación de textos y stickers ----------
+const ANIM_DIR: Record<TextAnim, [number, number]> = { none: [0, 0], fade: [0, 0], up: [0, 1], down: [0, -1], left: [1, 0], right: [-1, 0] }
+/** Duración efectiva de la animación de un texto (nunca más de la mitad de lo que dura). */
+export const animLen = (t: EText): number => (t.anim && t.anim !== 'none') ? clamp(t.animDur ?? 0.4, 0.1, t.duration / 2) : 0
+/** Transparencia (0..1) y desplazamiento (px del cuadro 1080x1920) de un texto en el instante t. Entra con la animación y sale con ella. */
+export function textAnim(t: EText, time: number): { alpha: number; dx: number; dy: number } {
+  const d = animLen(t)
+  if (d <= 0) return { alpha: 1, dx: 0, dy: 0 }
+  const lt = time - t.start
+  const pin = clamp(lt / d, 0, 1); const pout = clamp((t.duration - lt) / d, 0, 1)
+  const [vx, vy] = ANIM_DIR[t.anim ?? 'none']
+  const off = ((1 - pin) - (1 - pout)) * ANIM_DIST
+  return { alpha: Math.min(pin, pout), dx: vx * off, dy: vy * off }
+}
+/** Agrega un sticker (emoji grande) en at, con una animación de entrada. */
+export function addSticker(p: EditorProject, at: number, emoji: string, style: TextStyle = DEFAULT_TEXT_STYLE): { project: EditorProject; selectId: string } {
+  const r = addText(p, at, emoji, { ...style, fontSize: 200, outline: false, shadow: false, x: 0.5, y: 0.4, uppercase: false })
+  return { project: setText(r.project, r.selectId, { duration: Math.min(3, r.project.texts.find((t) => t.id === r.selectId)!.duration), anim: 'up', animDur: 0.4 }), selectId: r.selectId }
 }
 
 // ---------- pistas de audio ----------

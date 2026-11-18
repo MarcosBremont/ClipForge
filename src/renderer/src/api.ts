@@ -30,8 +30,8 @@ export interface RenderRequest {
 
 export interface EditorExportRequest {
   name: string
-  clips: Array<Pick<E.EClip, 'videoId' | 'srcStart' | 'srcEnd' | 'speed' | 'volume' | 'fadeIn' | 'fadeOut' | 'bright' | 'contrast' | 'sat' | 'warmth' | 'scale' | 'rot' | 'flip' | 'px' | 'py'>>
-  texts: Array<{ png: Uint8Array; start: number; end: number }>
+  clips: Array<Pick<E.EClip, 'videoId' | 'srcStart' | 'srcEnd' | 'speed' | 'volume' | 'fadeIn' | 'fadeOut' | 'bright' | 'contrast' | 'sat' | 'warmth' | 'scale' | 'rot' | 'flip' | 'px' | 'py' | 'kScale' | 'kPx' | 'kPy'>>
+  texts: Array<{ png: Uint8Array; start: number; end: number; anim?: string; animDur?: number }>
   music: { path: string; volume: number } | null
   audios: Array<{ path: string; start: number; duration: number; volume: number; fadeIn: number; fadeOut: number }>
   fps: 30 | 60
@@ -61,6 +61,8 @@ export const api = {
   pickFolders: () => inv<string[]>('dialog:folder'),
   pickVideos: () => inv<string[]>('dialog:videos'),
   pickMusic: () => inv<string | null>('dialog:music'),
+  sfxList: () => inv<Array<{ id: string; name: string; path: string; duration: number }>>('sfx:list'),
+  voiceSave: (bytes: Uint8Array) => inv<string>('voice:save', bytes),
   pickOutputDir: () => inv<string | null>('dialog:outputDir'),
 
   libraries: () => inv<Library[]>('lib:list'),

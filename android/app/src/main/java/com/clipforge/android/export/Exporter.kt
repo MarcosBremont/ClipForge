@@ -18,7 +18,11 @@ import androidx.media3.effect.HslAdjustment
 import androidx.media3.effect.MatrixTransformation
 import androidx.media3.effect.RgbAdjustment
 import androidx.media3.effect.RgbMatrix
+import androidx.media3.effect.OverlaySettings
 import com.clipforge.android.editor.ClipLook
+import com.clipforge.android.editor.EText
+import com.clipforge.android.editor.frameAt
+import com.clipforge.android.editor.textAnim
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import androidx.media3.common.MediaItem
@@ -67,7 +71,7 @@ data class ExportSpec(
 val NO_LOOK = ClipLook(0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, false, 0.0, 0.0)
 data class EditorClipSpec(val uri: String, val srcStartMs: Long, val srcEndMs: Long, val speed: Float, val volume: Float, val look: ClipLook = NO_LOOK)
 data class EditorAudioSpec(val uri: String, val startMs: Long, val durMs: Long, val volume: Float, val fadeInMs: Long, val fadeOutMs: Long)
-data class EditorTextSpec(val text: String, val style: TextStyle, val startUs: Long, val endUs: Long)
+data class EditorTextSpec(val text: String, val style: TextStyle, val startUs: Long, val endUs: Long, val anim: String = "none", val animDur: Double = 0.4)
 data class EditorSpec(
     val name: String,
     val clips: List<EditorClipSpec>,
@@ -119,18 +123,24 @@ private class FadeRgb(private val startUs: Long, private val durUs: Long, privat
 }
 
 /** Encuadre: espejo → zoom → giro (° horario) → desplazamiento, sobre el fotograma 1080×1920 (lo que queda fuera se recorta; el resto, negro). */
-fun frameMatrix(l: ClipLook, w: Int = Exporter.WIDTH, h: Int = Exporter.HEIGHT): Matrix {
+fun frameMatrix(l: ClipLook, w: Int = Exporter.WIDTH, h: Int = Exporter.HEIGHT, scale: Double = l.scale, px: Double = l.px, py: Double = l.py): Matrix {
     val m = Matrix()
     if (l.flip) m.postScale(-1f, 1f)
-    m.postScale(l.scale.toFloat(), l.scale.toFloat())
+    m.postScale(scale.toFloat(), scale.toFloat())
     if (l.rot != 0.0) { m.postScale(w / 2f, h / 2f); m.postRotate(-l.rot.toFloat()); m.postScale(2f / w, 2f / h) } // corrige la proporción para girar sin deformar
-    m.postTranslate((l.px * 2).toFloat(), (-l.py * 2).toFloat())
+    m.postTranslate((px * 2).toFloat(), (-py * 2).toFloat())
     return m
 }
 
 /** Muestra un bitmap solo entre [startUs, endUs) de la línea de tiempo (instantes globales de la secuencia). */
-private class TimedOverlay(private val shown: Bitmap, private val blank: Bitmap, private val startUs: Long, private val endUs: Long) : BitmapOverlay() {
+private class TimedOverlay(private val shown: Bitmap, private val blank: Bitmap, private val startUs: Long, private val endUs: Long, private val anim: EText? = null) : BitmapOverlay() {
     override fun getBitmap(presentationTimeUs: Long): Bitmap = if (presentationTimeUs in startUs until endUs) shown else blank
+    /** Entrada y salida animadas: transparencia y desplazamiento (en NDC: 1080/2 px = 1.0 horizontal, 1920/2 px = 1.0 vertical). */
+    override fun getOverlaySettings(presentationTimeUs: Long): OverlaySettings {
+        val a = anim ?: return super.getOverlaySettings(presentationTimeUs)
+        val st = textAnim(a, presentationTimeUs / 1_000_000.0)
+        return OverlaySettings.Builder().setAlphaScale(st.alpha.toFloat()).setBackgroundFrameAnchor((st.dx / 540.0).toFloat(), (-st.dy / 960.0).toFloat()).build()
+    }
 }
 
 /** Exporta con Media3 Transformer: recorte, escalado/recorte 1080×1920, concatenación, texto superpuesto, música. H.264 + AAC. */
@@ -168,7 +178,7 @@ class Exporter(private val ctx: Context) {
         var startUs = 0L
         val items = spec.clips.map { c ->
             // Instancias nuevas por clip: cada OverlayEffect gestiona su propia textura.
-            val overlays: List<TextureOverlay> = textBitmaps.map { (t, bmp) -> TimedOverlay(bmp, blank, t.startUs, t.endUs) }
+            val overlays: List<TextureOverlay> = textBitmaps.map { (t, bmp) -> TimedOverlay(bmp, blank, t.startUs, t.endUs, if (t.anim != "none") EText("", "", t.startUs / 1e6, (t.endUs - t.startUs) / 1e6, TextStyle(), t.anim, t.animDur) else null) }
             val durUs = ((c.srcEndMs - c.srcStartMs) * 1000 / c.speed).toLong()
             item(c.uri, c.srcStartMs, c.srcEndMs, c.speed, c.volume, spec.fps, overlays, c.look, startUs, durUs).also { startUs += durUs }
         }
@@ -195,7 +205,13 @@ class Exporter(private val ctx: Context) {
         if (look.contrast != 1.0) video.add(Contrast((look.contrast - 1).toFloat()))
         if (look.sat != 1.0) video.add(HslAdjustment.Builder().adjustSaturation(((look.sat - 1) * 100).toFloat()).build())
         if (look.warmth != 0.0) video.add(RgbAdjustment.Builder().setRedScale((1 + 0.15 * look.warmth).toFloat()).setBlueScale((1 - 0.15 * look.warmth).toFloat()).build())
-        if (look.scale != 1.0 || look.rot != 0.0 || look.flip || look.px != 0.0 || look.py != 0.0) {
+        if (look.animated) {
+            // Zoom y posición cambian linealmente a lo largo del clip (los instantes de los efectos son los de la línea de tiempo).
+            video.add(MatrixTransformation { us ->
+                val (sc, x, y) = frameAt(look, if (durUs > 0) (us - startUs).toDouble() / durUs else 0.0)
+                frameMatrix(look, scale = sc, px = x, py = y)
+            })
+        } else if (look.scale != 1.0 || look.rot != 0.0 || look.flip || look.px != 0.0 || look.py != 0.0) {
             val m = frameMatrix(look)
             video.add(MatrixTransformation { Matrix(m) })
         }

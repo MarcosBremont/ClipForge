@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ffmpegPath, probe, run } from '../src/main/ffmpeg.ts'
+import { ensureSfx } from '../src/main/sfx.ts'
 import { atempoChain, buildEditorFilter, renderEditor } from '../src/main/editorRender.ts'
 
 let passed = 0
@@ -164,6 +165,50 @@ try {
     const o2 = join(dir, 'flip.mp4')
     await renderEditor(one({ path: split, srcEnd: 2, flip: true, hasAudio: false }, {}, 'flip.mp4'))
     assert.ok(near(await pixel(o2, 0.8, 200, 960), [0, 0, 255]) && near(await pixel(o2, 0.8, 900, 960), [255, 0, 0]), 'espejo')
+  })
+
+  await ok('efectos de sonido: se generan WAV válidos con sonido y duración correcta', async () => {
+    const list = ensureSfx(join(dir, 'sfx'))
+    assert.equal(list.length, 6)
+    for (const x of list) {
+      const r = await run(ffmpegPath(), ['-hide_banner', '-i', x.path])
+      const m = /Duration: (\d+):(\d+):([\d.]+)/.exec(r.stderr)!
+      const dur = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])
+      assert.ok(Math.abs(dur - x.duration) < 0.05, x.id + ' duración ' + dur)
+      assert.ok(await maxVolume(x.path, 0, x.duration) > -30, x.id + ' debe sonar')
+    }
+    assert.equal(ensureSfx(join(dir, 'sfx'))[0].path, list[0].path) // idempotente
+    // y se pueden usar como pista de audio del editor
+    const o = join(dir, 'sfxclip.mp4')
+    await renderEditor(one({ volume: 0 }, { audios: [{ path: list.find((x) => x.id === 'ding')!.path, start: 1, duration: 1, volume: 1, fadeIn: 0, fadeOut: 0 }] }, 'sfxclip.mp4'))
+    assert.ok(await maxVolume(o, 1.05, 1.9) > -40)
+  })
+
+  await ok('animación de encuadre: el clip se desplaza de inicio a fin', async () => {
+    const split = join(dir, 'split2.mp4')
+    await ff(['-f', 'lavfi', '-i', 'color=c=red:s=360x1280:r=30:d=2', '-f', 'lavfi', '-i', 'color=c=blue:s=360x1280:r=30:d=2', '-filter_complex', '[0][1]hstack', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', split])
+    const o = join(dir, 'kf.mp4')
+    await renderEditor(one({ path: split, srcEnd: 2, hasAudio: false, scale: 1, px: 0, kScale: 1, kPx: 0.5, kPy: 0 }, {}, 'kf.mp4'))
+    assert.ok(near(await pixel(o, 0.05, 100, 960), [255, 0, 0]), 'al inicio el rojo está a la izquierda')
+    assert.ok(lum(await pixel(o, 1.9, 100, 960)) < 60, 'al final el clip se desplazó a la derecha y a la izquierda queda negro')
+    assert.ok(near(await pixel(o, 1.9, 900, 960), [255, 0, 0]), 'el rojo llegó a la derecha')
+    const o2 = join(dir, 'kz.mp4')
+    await renderEditor(one({ path: split, srcEnd: 2, hasAudio: false, scale: 1, kScale: 0.5 }, {}, 'kz.mp4'))
+    assert.ok(lum(await pixel(o2, 1.9, 40, 40)) < 60, 'zoom out: bordes negros al final')
+    assert.ok(near(await pixel(o2, 0.05, 40, 40), [255, 0, 0]), 'zoom out: lleno al inicio')
+  })
+
+  await ok('animación de texto: fundido de entrada y salida', async () => {
+    const o = join(dir, 'ta.mp4')
+    await renderEditor(one({}, { texts: [{ png: readFileSync(box), start: 1, end: 3, anim: 'fade', animDur: 1 }] }, 'ta.mp4'))
+    const white = (c: [number, number, number]): boolean => near(c, [255, 255, 255], 30)
+    assert.ok(!white(await pixel(o, 1.05, 540, 960)), 'recién empieza: casi transparente')
+    assert.ok(white(await pixel(o, 2, 540, 960)), 'a mitad: pleno')
+    assert.ok(!white(await pixel(o, 2.95, 540, 960)), 'al final se desvanece')
+    const o2 = join(dir, 'ts.mp4')
+    await renderEditor(one({}, { texts: [{ png: readFileSync(box), start: 1, end: 3, anim: 'up', animDur: 0.5 }] }, 'ts.mp4'))
+    assert.ok(white(await pixel(o2, 2, 540, 960)), 'deslizar: ya en su sitio a mitad')
+    assert.ok(!white(await pixel(o2, 1.02, 540, 960)), 'deslizar: al inicio aún no se ve')
   })
 
   await ok('pistas de audio con inicio propio suenan solo desde ese instante', async () => {

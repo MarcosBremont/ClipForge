@@ -1,6 +1,6 @@
 import type { EClip } from '../shared/editor'
 import { app, BrowserWindow, dialog, ipcMain, protocol, session, shell } from 'electron'
-import { createReadStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -15,6 +15,7 @@ import { detectScenes } from './ffmpeg'
 import { cancelJob, emitProgress, endJob, newJob, pool } from './jobs'
 import { importPaths, importUrl, verifyLibrary } from './library'
 import { renderEditor } from './editorRender'
+import { ensureSfx } from './sfx'
 import { availableHwEncoders, makeProxy, renderVideo } from './render'
 import * as updater from './updater'
 
@@ -165,8 +166,8 @@ function startRender(req: RenderRequest): string {
 // ---------- exportación del editor de video ----------
 export interface EditorExportRequest {
   name: string
-  clips: Array<Pick<EClip, 'videoId' | 'srcStart' | 'srcEnd' | 'speed' | 'volume' | 'fadeIn' | 'fadeOut' | 'bright' | 'contrast' | 'sat' | 'warmth' | 'scale' | 'rot' | 'flip' | 'px' | 'py'>>
-  texts: Array<{ png: Uint8Array; start: number; end: number }>
+  clips: Array<Pick<EClip, 'videoId' | 'srcStart' | 'srcEnd' | 'speed' | 'volume' | 'fadeIn' | 'fadeOut' | 'bright' | 'contrast' | 'sat' | 'warmth' | 'scale' | 'rot' | 'flip' | 'px' | 'py' | 'kScale' | 'kPx' | 'kPy'>>
+  texts: Array<{ png: Uint8Array; start: number; end: number; anim?: string; animDur?: number }>
   music: { path: string; volume: number } | null
   audios: Array<{ path: string; start: number; duration: number; volume: number; fadeIn: number; fadeOut: number }>
   fps: 30 | 60
@@ -194,7 +195,7 @@ function startEditorExport(req: EditorExportRequest): string {
       const tmpDir = join(dir('tmp'), jobId)
       emitProgress({ jobId, kind: 'render', label, done: 0, total: 1000, status: 'running', message: 'Renderizando' })
       const r = await renderEditor({
-        clips, texts: req.texts.map((t) => ({ png: Buffer.from(t.png), start: t.start, end: t.end })), music: req.music, audios: req.audios ?? [],
+        clips, texts: req.texts.map((t) => ({ png: Buffer.from(t.png), start: t.start, end: t.end, anim: t.anim, animDur: t.animDur })), music: req.music, audios: req.audios ?? [],
         fps: req.fps, quality: req.quality, outPath, tmpDir,
         onProgress: (f) => emitProgress({ jobId, kind: 'render', label, done: Math.round(f * 1000), total: 1000, status: 'running', message: 'Renderizando' }),
         onSpawn: (p) => { ctl.procs.add(p); p.on('close', () => ctl.procs.delete(p)) },
@@ -278,6 +279,8 @@ function registerIpc(): void {
 
   h('dialog:folder', async () => { const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory', 'multiSelections'] }); return r.canceled ? [] : r.filePaths })
   h('dialog:videos', async () => { const r = await dialog.showOpenDialog(win!, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Videos', extensions: VIDEO_EXTENSIONS.map((e) => e.slice(1)) }] }); return r.canceled ? [] : r.filePaths })
+  h('sfx:list', () => ensureSfx(dir('sfx')))
+  h('voice:save', (bytes: Uint8Array) => { const p = join(dir('voices'), `voz_${Date.now()}.webm`); writeFileSync(p, Buffer.from(bytes)); return p })
   h('dialog:music', async () => { const r = await dialog.showOpenDialog(win!, { properties: ['openFile'], filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'] }] }); return r.canceled ? null : r.filePaths[0] })
   h('dialog:outputDir', async () => { const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory', 'createDirectory'] }); return r.canceled ? null : r.filePaths[0] })
 

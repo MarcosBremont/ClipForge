@@ -56,7 +56,7 @@ import java.io.File
 import kotlin.math.abs
 import kotlin.math.max
 
-private enum class Dlg { ADD, SPEED, VOLUME, TEXT, MUSIC, PROJECTS, FILTER, FRAME, FADE, TRANS, AUDIO, CAPTIONS }
+private enum class Dlg { ADD, SPEED, VOLUME, TEXT, MUSIC, PROJECTS, FILTER, FRAME, FADE, TRANS, AUDIO, CAPTIONS, STICKERS, SFX, ANIM }
 
 private val RED = Color(0xFFFF4D6D)
 
@@ -88,6 +88,13 @@ fun EditorScreen(evm: EditorViewModel, nav: NavHostController) {
         if (uri != null) evm.addAudioFile(uri, uri.lastPathSegment?.substringAfterLast('/') ?: "voz", "voice")
     }
     var transIdx by remember { mutableIntStateOf(-1) }
+    val recording by evm.recording.collectAsState()
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> if (ok) evm.toggleRecord() }
+    val ctx = LocalContext.current
+    fun record() {
+        if (recording || androidx.core.content.ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) evm.toggleRecord()
+        else micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
+    }
     DisposableEffect(Unit) { onDispose { evm.setPlaying(false) } }
 
     Column(Modifier.fillMaxSize()) {
@@ -144,6 +151,7 @@ fun EditorScreen(evm: EditorViewModel, nav: NavHostController) {
                 }
                 SelKind.TEXT -> {
                     Tool("✎ Editar texto") { dlg = Dlg.TEXT }
+                    Tool("✨ Animación") { dlg = Dlg.ANIM }
                     Tool("◎ Centrar") { val id = sel!!.id; evm.apply { setText(it, id, style = { s -> s.copy(x = 0.5f, y = 0.5f) }) } }
                     Tool("⧉ Duplicar") { evm.duplicateSelected() }
                     Tool("🗑 Eliminar") { evm.deleteSelected() }
@@ -163,6 +171,9 @@ fun EditorScreen(evm: EditorViewModel, nav: NavHostController) {
                     Tool("🔊 Audio") { sfxPicker.launch(arrayOf("audio/*")) }
                     Tool("🎙 Voz") { voicePicker.launch(arrayOf("audio/*")) }
                     Tool("💬 Subtítulos") { dlg = Dlg.CAPTIONS }
+                    Tool("😀 Stickers") { dlg = Dlg.STICKERS }
+                    Tool("🎵 Efectos") { dlg = Dlg.SFX }
+                    Tool(if (recording) "⏹ Parar" else "⏺ Grabar") { record() }
                     Tool("✂ Dividir") { evm.split() }
                 }
             }
@@ -193,6 +204,9 @@ fun EditorScreen(evm: EditorViewModel, nav: NavHostController) {
         Dlg.FADE -> sel?.takeIf { it.kind == SelKind.CLIP }?.let { s -> if (project.clips.any { it.id == s.id }) FadeDialog(evm, s.id) { dlg = null } else dlg = null }
         Dlg.TRANS -> TransitionDialog(evm, transIdx) { dlg = null }
         Dlg.CAPTIONS -> CaptionsDialog(evm) { dlg = null }
+        Dlg.STICKERS -> StickersDialog(evm) { dlg = null }
+        Dlg.SFX -> SfxDialog(evm) { dlg = null }
+        Dlg.ANIM -> sel?.takeIf { it.kind == SelKind.TEXT }?.let { s -> if (project.texts.any { it.id == s.id }) AnimDialog(evm, s.id) { dlg = null } else dlg = null }
         Dlg.AUDIO -> sel?.takeIf { it.kind == SelKind.AUDIO }?.let { s -> if (project.audios.any { it.id == s.id }) AudioDialog(evm, s.id) { dlg = null } else dlg = null }
         null -> {}
     }
@@ -331,10 +345,11 @@ private fun EditorPreview(evm: EditorViewModel) {
                     val l = look?.first ?: return@graphicsLayer
                     val loc = look.second
                     val c = project.clips[loc.index]
-                    scaleX = (if (l.flip) -1f else 1f) * l.scale.toFloat(); scaleY = l.scale.toFloat()
-                    rotationZ = l.rot.toFloat()
-                    translationX = (l.px * size.width).toFloat(); translationY = (l.py * size.height).toFloat()
                     val lt = playhead - loc.start; val d = clipDur(c)
+                    val (fs, fx, fy) = frameAt(l, lt / d)
+                    scaleX = (if (l.flip) -1f else 1f) * fs.toFloat(); scaleY = fs.toFloat()
+                    rotationZ = l.rot.toFloat()
+                    translationX = (fx * size.width).toFloat(); translationY = (fy * size.height).toFloat()
                     alpha = minOf(if (l.fadeIn > 0) lt / l.fadeIn else 1.0, if (l.fadeOut > 0) (d - lt) / l.fadeOut else 1.0).coerceIn(0.0, 1.0).toFloat()
                 }
             )
@@ -397,7 +412,16 @@ private fun EditorPreview(evm: EditorViewModel) {
                     }
             ) {
                 val s = size.width / TextRenderer.W
-                drawIntoCanvas { c -> for (t in visible) TextRenderer.draw(c.nativeCanvas, t.text, t.style, s) }
+                drawIntoCanvas { c ->
+                    val nc = c.nativeCanvas
+                    for (t in visible) {
+                        val a = textAnim(t, playhead)
+                        val save = nc.saveLayerAlpha(null, (a.alpha * 255).toInt().coerceIn(0, 255))
+                        nc.translate((a.dx * s).toFloat(), (a.dy * s).toFloat())
+                        TextRenderer.draw(nc, t.text, t.style, s)
+                        nc.restoreToCount(save)
+                    }
+                }
                 // recuadro del texto seleccionado
                 if (selText != null && visible.any { it.id == selText.id }) {
                     val r = TextRenderer.measureBox(selText.text, selText.style)
@@ -779,6 +803,7 @@ private fun FilterDialog(evm: EditorViewModel, id: String, onClose: () -> Unit) 
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FrameDialog(evm: EditorViewModel, id: String, onClose: () -> Unit) {
     val project by evm.project.collectAsState()
@@ -788,6 +813,18 @@ private fun FrameDialog(evm: EditorViewModel, id: String, onClose: () -> Unit) {
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()).heightIn(max = 460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Hint("También puedes pellizcar, girar y arrastrar sobre la vista previa con el clip seleccionado.")
+                Text("Movimiento (de inicio a fin del clip)", fontSize = 13.sp)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("none" to "Ninguno", "zoomIn" to "Zoom +", "zoomOut" to "Zoom −", "panLeft" to "Paneo ←", "panRight" to "Paneo →").forEach { (k, n) ->
+                        AssistChip(onClick = { evm.apply { applyMotion(it, id, k) } }, label = { Text(n) })
+                    }
+                }
+                if (clipLook(c).animated) {
+                    Hint("Animado: los valores de abajo son los del inicio; estos, los del final.")
+                    LabeledSlider("Zoom al final", clipLook(c).kScale.toFloat(), 0.25f..4f, "%.2f×".format(clipLook(c).kScale)) { v -> evm.edit("ks$id") { setClip(it, id, kScale = v.toDouble()) } }
+                    LabeledSlider("Posición X al final", clipLook(c).kPx.toFloat(), -1f..1f, "${(clipLook(c).kPx * 100).toInt()} %") { v -> evm.edit("kx$id") { setClip(it, id, kPx = v.toDouble()) } }
+                    LabeledSlider("Posición Y al final", clipLook(c).kPy.toFloat(), -1f..1f, "${(clipLook(c).kPy * 100).toInt()} %") { v -> evm.edit("ky$id") { setClip(it, id, kPy = v.toDouble()) } }
+                }
                 LabeledSlider("Zoom", c.scale.toFloat(), 0.25f..4f, "%.2f×".format(c.scale)) { v -> evm.edit("sc$id") { setClip(it, id, scale = v.toDouble()) } }
                 LabeledSlider("Giro", c.rot.toFloat(), -180f..180f, "${c.rot.toInt()}°") { v -> evm.edit("ro$id") { setClip(it, id, rot = v.toDouble()) } }
                 LabeledSlider("Posición horizontal", c.px.toFloat(), -1f..1f, "${(c.px * 100).toInt()} %") { v -> evm.edit("px$id") { setClip(it, id, px = v.toDouble()) } }
@@ -853,6 +890,69 @@ private fun AudioDialog(evm: EditorViewModel, id: String, onClose: () -> Unit) {
                 LabeledSlider("Volumen", a.volume.toFloat(), 0f..1f, "${(a.volume * 100).toInt()} %") { v -> evm.edit("av$id") { setAudio(it, id, volume = v.toDouble()) } }
                 LabeledSlider("Fundido de entrada", a.fadeIn.toFloat(), 0f..3f, "%.1f s".format(a.fadeIn)) { v -> evm.edit("afi$id") { setAudio(it, id, fadeIn = v.toDouble()) } }
                 LabeledSlider("Fundido de salida", a.fadeOut.toFloat(), 0f..3f, "%.1f s".format(a.fadeOut)) { v -> evm.edit("afo$id") { setAudio(it, id, fadeOut = v.toDouble()) } }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("Listo") } }
+    )
+}
+
+private val STICKERS = listOf("🔥", "😂", "😍", "🤯", "👀", "💯", "✨", "❤️", "👍", "👏", "🎉", "😎", "🚀", "💥", "⭐", "😱", "🙌", "💪", "🤣", "😮")
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun StickersDialog(evm: EditorViewModel, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose, title = { Text("Stickers") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Hint("Aparecen en la cabeza de reproducción con una animación de entrada. Arrástralos sobre la vista previa como cualquier texto.")
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    STICKERS.forEach { e -> Box(Modifier.clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable { evm.addStickerHere(e); onClose() }.padding(10.dp)) { Text(e, fontSize = 28.sp) } }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("Cerrar") } }
+    )
+}
+
+@Composable
+private fun SfxDialog(evm: EditorViewModel, onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    val list = remember { com.clipforge.android.export.SfxLibrary.ensure(ctx) }
+    AlertDialog(
+        onDismissRequest = onClose, title = { Text("Efectos de sonido") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Hint("Se agregan en la cabeza de reproducción. Sintetizados en tu teléfono: sin derechos de autor.")
+                list.forEach { x ->
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(x.name, Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                        TextButton(onClick = { runCatching { android.media.MediaPlayer.create(ctx, android.net.Uri.fromFile(x.file))?.apply { setOnCompletionListener { it.release() }; start() } } }) { Text("▶ Oír") }
+                        TextButton(onClick = { evm.addSfx(x); onClose() }) { Text("Agregar") }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("Cerrar") } }
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AnimDialog(evm: EditorViewModel, id: String, onClose: () -> Unit) {
+    val project by evm.project.collectAsState()
+    val t = project.texts.find { it.id == id } ?: run { onClose(); return }
+    AlertDialog(
+        onDismissRequest = onClose, title = { Text("Animación del texto") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("none" to "Ninguna", "fade" to "Fundido", "up" to "Sube", "down" to "Baja", "left" to "Desde la derecha", "right" to "Desde la izquierda").forEach { (k, n) ->
+                        FilterChip(selected = t.anim == k, onClick = { evm.apply { setText(it, id, anim = k) } }, label = { Text(n) })
+                    }
+                }
+                if (t.anim != "none") LabeledSlider("Duración", t.animDur.toFloat(), 0.1f..1.5f, "%.2f s".format(t.animDur)) { v -> evm.edit("tad$id") { setText(it, id, animDur = v.toDouble()) } }
+                Hint("El texto entra con esta animación y sale con la misma. Vale también para los stickers.")
             }
         },
         confirmButton = { TextButton(onClick = onClose) { Text("Listo") } }

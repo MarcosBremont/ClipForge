@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {
   addClip, addText, clipDur, clipStarts, duplicateClip, duplicateText, fromPlan, locate, moveClip, moveText, newProject, normalize,
   removeClip, removeText, resizeText, setClip, setText, snap, splitAt, textsAt, totalDuration, trimClip, MIN_CLIP,
-  addAudio, captionsFromText, splitCaptions, applyFilter, clipLook, hasColor, hasFrame, moveAudio, removeAudio, setAudio, setTransition, transitionAt, FILTERS
+  addAudio, addSticker, applyMotion, frameAt, textAnim, animLen, captionsFromText, splitCaptions, applyFilter, clipLook, hasColor, hasFrame, moveAudio, removeAudio, setAudio, setTransition, transitionAt, FILTERS
 } from '../src/shared/editor.ts'
 import { DEFAULT_TEXT_STYLE } from '../src/shared/types.ts'
 
@@ -168,7 +168,7 @@ ok('normalize es idempotente', () => {
 ok('setClip limita los valores de aspecto y clipLook devuelve los de fábrica', () => {
   let p = addClip(newProject(), 1, 10)
   const id = p.clips[0].id
-  assert.deepEqual(clipLook(p.clips[0]), { fadeIn: 0, fadeOut: 0, bright: 0, contrast: 1, sat: 1, warmth: 0, scale: 1, rot: 0, flip: false, px: 0, py: 0 })
+  assert.deepEqual(clipLook(p.clips[0]), { fadeIn: 0, fadeOut: 0, bright: 0, contrast: 1, sat: 1, warmth: 0, scale: 1, rot: 0, flip: false, px: 0, py: 0, kScale: 1, kPx: 0, kPy: 0, animated: false })
   assert.equal(hasColor(p.clips[0]), false); assert.equal(hasFrame(p.clips[0]), false)
   p = setClip(p, id, { scale: 99, rot: 400, sat: -3, bright: 2, px: 5 })
   const l = clipLook(p.clips[0])
@@ -237,6 +237,46 @@ ok('captionsFromText reparte las frases sin huecos ni solapes dentro del rango',
   close(ts[ts.length - 1].start + ts[ts.length - 1].duration, 8)
   assert.ok(ts[1].duration > ts[0].duration * 0.5)
   assert.equal(captionsFromText(newProject(), 'hola', DEFAULT_TEXT_STYLE).ids.length, 0) // sin clips no hay dónde ponerlos
+})
+
+ok('applyMotion crea y quita animaciones de zoom/paneo y frameAt interpola', () => {
+  let p = addClip(newProject(), 1, 10)
+  const id = p.clips[0].id
+  assert.equal(clipLook(p.clips[0]).animated, false)
+  p = applyMotion(p, id, 'zoomIn')
+  assert.equal(clipLook(p.clips[0]).animated, true); assert.ok(hasFrame(p.clips[0]))
+  close(frameAt(p.clips[0], 0).scale, 1); close(frameAt(p.clips[0], 0.5).scale, 1.15); close(frameAt(p.clips[0], 1).scale, 1.3); close(frameAt(p.clips[0], 5).scale, 1.3)
+  p = applyMotion(p, id, 'panLeft')
+  close(frameAt(p.clips[0], 0).px, 0.1); close(frameAt(p.clips[0], 1).px, -0.1); close(frameAt(p.clips[0], 0.5).px, 0)
+  p = applyMotion(p, id, 'none')
+  assert.equal(clipLook(p.clips[0]).animated, false)
+  p = setClip(p, id, { kScale: 3 })
+  assert.equal(clipLook(p.clips[0]).animated, true); assert.equal(p.clips[0].kScale, 3)
+})
+
+ok('textAnim: entra con fundido y deslizamiento y sale igual; sin animación no cambia nada', () => {
+  let p = addClip(newProject(), 1, 10)
+  const r = addText(p, 2, 'hola'); p = r.project
+  assert.deepEqual(textAnim(p.texts[0], 3), { alpha: 1, dx: 0, dy: 0 })
+  p = setText(p, r.selectId, { anim: 'up', animDur: 0.5, duration: 4 })
+  const t = p.texts[0]
+  close(animLen(t), 0.5)
+  let a = textAnim(t, 2); close(a.alpha, 0); close(a.dy, 120); close(a.dx, 0)
+  a = textAnim(t, 2.25); close(a.alpha, 0.5); close(a.dy, 60)
+  a = textAnim(t, 4); close(a.alpha, 1); close(a.dy, 0)
+  a = textAnim(t, 5.75); close(a.alpha, 0.5); close(a.dy, -60)
+  a = textAnim(t, 6); close(a.alpha, 0)
+  p = setText(p, r.selectId, { anim: 'left' })
+  close(textAnim(p.texts[0], 2).dx, 120)
+  p = setText(p, r.selectId, { anim: 'fade', duration: 0.4 })
+  close(animLen(p.texts[0]), 0.2) // nunca más de la mitad
+})
+
+ok('addSticker crea un emoji grande con animación de entrada', () => {
+  const p = addClip(newProject(), 1, 10)
+  const r = addSticker(p, 1, '🔥')
+  const t = r.project.texts[0]
+  assert.equal(t.text, '🔥'); assert.equal(t.anim, 'up'); assert.ok(t.style.fontSize >= 150); assert.equal(t.style.outline, false)
 })
 
 console.log(`\n${passed} pruebas del editor OK`)

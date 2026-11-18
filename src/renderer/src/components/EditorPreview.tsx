@@ -145,7 +145,8 @@ export default function EditorPreview(): React.JSX.Element {
     const l = E.clipLook(c)
     const f = fadeAt(time - loc.start, E.clipDur(c), l.fadeIn, l.fadeOut)
     el.style.filter = E.hasColor(c) ? `brightness(${1 + l.bright}) contrast(${l.contrast}) saturate(${l.sat})` : ''
-    el.style.transform = E.hasFrame(c) ? `translate(${l.px * 100}%, ${l.py * 100}%) rotate(${l.rot}deg) scale(${l.scale}) scaleX(${l.flip ? -1 : 1})` : ''
+    const fr = E.frameAt(c, (time - loc.start) / E.clipDur(c))
+    el.style.transform = E.hasFrame(c) ? `translate(${fr.px * 100}%, ${fr.py * 100}%) rotate(${l.rot}deg) scale(${fr.scale}) scaleX(${l.flip ? -1 : 1})` : ''
     el.style.opacity = String(f)
     el.volume = Math.max(0, Math.min(1, c.volume * f))
     const w = warm.current
@@ -237,8 +238,14 @@ export default function EditorPreview(): React.JSX.Element {
     if (c.width !== w) { c.width = w; c.height = Math.round(w * (CANVAS_H / CANVAS_W)) }
     const ctx = c.getContext('2d')!
     ctx.clearRect(0, 0, c.width, c.height)
-    for (const t of visible) drawText(ctx, t.text, t.style, c.width / CANVAS_W)
-  }, [visible, fontsTick])
+    const k = c.width / CANVAS_W
+    for (const t of visible) {
+      const a = E.textAnim(t, playhead)
+      ctx.save(); ctx.globalAlpha = a.alpha; ctx.translate(a.dx * k, a.dy * k)
+      drawText(ctx, t.text, t.style, k)
+      ctx.restore()
+    }
+  }, [visible, fontsTick, playhead])
 
   const toCanvas = (e: React.PointerEvent): { x: number; y: number } => {
     const r = stage.current!.getBoundingClientRect()

@@ -157,8 +157,9 @@ class EditorExportInstrumentedTest {
 
     // ---------------------------------------------------------------- aspecto del clip (Fase 1)
     private fun look(fadeIn: Double = 0.0, fadeOut: Double = 0.0, bright: Double = 0.0, contrast: Double = 1.0, sat: Double = 1.0, warmth: Double = 0.0,
-                     scale: Double = 1.0, rot: Double = 0.0, flip: Boolean = false, px: Double = 0.0, py: Double = 0.0) =
-        ClipLook(fadeIn, fadeOut, bright, contrast, sat, warmth, scale, rot, flip, px, py)
+                     scale: Double = 1.0, rot: Double = 0.0, flip: Boolean = false, px: Double = 0.0, py: Double = 0.0,
+                     kScale: Double = scale, kPx: Double = px, kPy: Double = py) =
+        ClipLook(fadeIn, fadeOut, bright, contrast, sat, warmth, scale, rot, flip, px, py, kScale, kPx, kPy)
 
     private fun one(asset: String, look: ClipLook, name: String, dur: Long = 4000, audios: List<EditorAudioSpec> = emptyList(), volume: Float = 1f): File =
         render(EditorSpec("t", listOf(EditorClipSpec(asset(asset), 0, dur, 1f, volume, look)), emptyList(), null, 0.5f, 30, "rapida", audios), name)
@@ -208,5 +209,24 @@ class EditorExportInstrumentedTest {
         assertTrue("silencio antes ($before)", before < 60)
         assertTrue("suena desde 2 s ($during)", during > 300)
         assertTrue("se corta tras su duración ($after)", after < 60)
+    }
+
+    // ---------------------------------------------------------------- Fase 2
+    @Test fun animacionDeEncuadreDesplazaElClipDeInicioAFin() {
+        val out = one("split.mp4", look(kPx = 0.5), "kf.mp4", dur = 2000)
+        val a = frame(out, 120); val b = frame(out, 1800)
+        assertTrue("al inicio el rojo está a la izquierda", near(a.getPixel(100, 960), 255, 0, 0))
+        assertTrue("al final el clip se desplazó: izquierda negra (${lum(b.getPixel(100, 960))})", lum(b.getPixel(100, 960)) < 60)
+        assertTrue("y el rojo llegó a la derecha", near(b.getPixel(900, 960), 255, 0, 0))
+    }
+
+    @Test fun animacionDeTextoConFundido() {
+        val style = TextStyle(fontSize = 220f, fontWeight = 900, color = "#FFFFFF", outline = false, shadow = false)
+        val sp = EditorSpec("t", listOf(EditorClipSpec(asset("red.mp4"), 0, 4000, 1f, 0f)), listOf(EditorTextSpec("WWWW", style, 1_000_000, 3_000_000, "fade", 1.0)), null, 0.5f, 30, "rapida")
+        val out = render(sp, "ta.mp4")
+        val early = whitePixels(frame(out, 1100)); val mid = whitePixels(frame(out, 2000)); val late = whitePixels(frame(out, 2900))
+        assertTrue("casi transparente al empezar ($early)", early < mid / 4)
+        assertTrue("pleno a mitad ($mid)", mid > 2000)
+        assertTrue("se desvanece al final ($late)", late < mid / 4)
     }
 }
