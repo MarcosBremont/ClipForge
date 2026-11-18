@@ -24,7 +24,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import java.io.File
 
-data class ExportItem(val spec: ExportSpec, val segments: List<Segment>)
+/** Un video a exportar: [render] lo dibuja en el archivo temporal (generador automático o editor). */
+data class ExportItem(val name: String, val duration: Double, val segments: List<Segment>, val render: suspend (Exporter, File, (Float) -> Unit) -> Unit)
 data class ExportBatch(val projectId: Long, val items: List<ExportItem>)
 
 data class ExportState(
@@ -72,23 +73,23 @@ class ExportService : Service() {
         val finished = mutableListOf<Long>()
         try {
             batch.items.forEachIndexed { i, item ->
-                st.update { it.copy(index = i + 1, progress = 0f, currentName = item.spec.name) }
-                val part = File(tmpDir, "${item.spec.name}.part.mp4")
+                st.update { it.copy(index = i + 1, progress = 0f, currentName = item.name) }
+                val part = File(tmpDir, "${item.name}.part.mp4")
                 try {
-                    exporter.render(item.spec, part) { p ->
+                    item.render(exporter, part) { p ->
                         st.update { it.copy(progress = p) }
                         notify("Versión ${i + 1} de ${batch.items.size}", ((i + p) / batch.items.size * 100).toInt())
                     }
                     // Escritura atómica: se renombra solo cuando FFmpeg/Transformer terminó bien.
-                    val done = File(tmpDir, "${item.spec.name}.mp4")
+                    val done = File(tmpDir, "${item.name}.mp4")
                     if (done.exists()) done.delete()
                     if (!part.renameTo(done)) throw IllegalStateException("No se pudo finalizar el archivo")
-                    val uri = withContext(Dispatchers.IO) { exporter.saveToMovies(done, "${item.spec.name}.mp4") }
+                    val uri = withContext(Dispatchers.IO) { exporter.saveToMovies(done, "${item.name}.mp4") }
                     val size = withContext(Dispatchers.IO) { done.length().also { done.delete() } }
                     val id = withContext(Dispatchers.IO) {
                         dao.insertUsed(item.segments.map { UsedSegmentEntity(videoId = it.videoId, start = it.start, duration = it.duration, createdAt = System.currentTimeMillis()) })
-                        dao.insertOutput(OutputEntity(projectId = batch.projectId, uri = uri.toString(), name = "${item.spec.name}.mp4",
-                            duration = totalDuration(item.segments), size = size, comboKey = comboKey(item.segments), createdAt = System.currentTimeMillis()))
+                        dao.insertOutput(OutputEntity(projectId = batch.projectId, uri = uri.toString(), name = "${item.name}.mp4",
+                            duration = item.duration, size = size, comboKey = comboKey(item.segments), createdAt = System.currentTimeMillis()))
                     }
                     finished.add(id)
                     st.update { it.copy(finished = finished.toList()) }

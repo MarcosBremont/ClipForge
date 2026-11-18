@@ -44,7 +44,7 @@ import kotlinx.coroutines.delay
 import java.io.File
 
 @Composable
-fun PreviewScreen(vm: MainViewModel, nav: NavHostController) {
+fun PreviewScreen(vm: MainViewModel, nav: NavHostController, onOpenEditor: () -> Unit) {
     val d by vm.draft.collectAsState()
     val vmap by vm.videoMap.collectAsState()
     val videos by vm.videos.collectAsState()
@@ -184,6 +184,8 @@ fun PreviewScreen(vm: MainViewModel, nav: NavHostController) {
             },
             Modifier.fillMaxWidth().height(54.dp), enabled = !export.running
         ) { Text(if (d.settings.versions > 1) "Exportar ${d.settings.versions} versiones" else "Exportar video", fontSize = 16.sp) }
+        OutlinedButton(onClick = onOpenEditor, Modifier.fillMaxWidth()) { Text("✂ Abrir en el editor de video") }
+        Hint("Ajusta a mano: recortar, cortar, mover el texto, velocidad, música…")
         Spacer(Modifier.height(20.dp))
     }
 

@@ -39,6 +39,7 @@ fun MoreScreen(vm: MainViewModel, nav: NavHostController) {
     val update by vm.update.collectAsState()
     Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Más", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        MoreItem("Proyectos", "Tus proyectos de «Crear video» (se guardan solos)") { nav.navigate("projects") }
         MoreItem("Videos generados", "Tus exportaciones: reproducir, compartir, borrar") { nav.navigate("generated") }
         MoreItem("Plantillas de texto", "Estilos guardados para reutilizar") { nav.navigate("templates") }
         MoreItem("Inteligencia artificial", "Proveedores opcionales (Gemini, Claude, Grok…)") { nav.navigate("ai") }

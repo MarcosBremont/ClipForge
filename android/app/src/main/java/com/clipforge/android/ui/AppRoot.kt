@@ -20,6 +20,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.clipforge.android.MainViewModel
 import com.clipforge.android.UpdateUi
+import com.clipforge.android.editor.EditorViewModel
 
 private data class Tab(val route: String, val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
 
@@ -27,22 +28,24 @@ private val TABS = listOf(
     Tab("home", "Inicio", Icons.Filled.Home),
     Tab("library", "Biblioteca", Icons.Filled.List),
     Tab("create", "Crear", Icons.Filled.Add),
-    Tab("projects", "Proyectos", Icons.Filled.Edit),
+    Tab("editor", "Editor", Icons.Filled.Create),
     Tab("more", "Más", Icons.Filled.MoreVert)
 )
-private val MORE_ROUTES = setOf("more", "generated", "templates", "ai", "settings")
+private val MORE_ROUTES = setOf("more", "projects", "generated", "templates", "ai", "settings")
 
 @Composable
 fun AppRoot() {
     val vm: MainViewModel = viewModel()
+    val evm: EditorViewModel = viewModel()
     val nav = rememberNavController()
     val snack = remember { SnackbarHostState() }
     LaunchedEffect(Unit) { vm.toast.collect { snack.showSnackbar(it) } }
+    LaunchedEffect(Unit) { evm.toast.collect { snack.showSnackbar(it) } }
     LaunchedEffect(Unit) { vm.checkUpdates(silent = true) }
 
     val route = nav.currentBackStackEntryAsState().value?.destination?.route
     val update by vm.update.collectAsState()
-    val showBar = route != null && route != "preview"
+    val showBar = route != null && route != "preview" && route != "editor"
 
     Scaffold(
         snackbarHost = { SnackbarHost(snack) },
@@ -69,7 +72,8 @@ fun AppRoot() {
                 composable("home") { HomeScreen(vm, nav) }
                 composable("library") { LibraryScreen(vm) }
                 composable("create") { CreateScreen(vm, nav) }
-                composable("preview") { PreviewScreen(vm, nav) }
+                composable("preview") { PreviewScreen(vm, nav) { evm.importDraft(vm.draft.value); nav.navigate("editor") } }
+                composable("editor") { EditorScreen(evm, nav) }
                 composable("projects") { ProjectsScreen(vm, nav) }
                 composable("more") { MoreScreen(vm, nav) }
                 composable("generated") { GeneratedScreen(vm) }

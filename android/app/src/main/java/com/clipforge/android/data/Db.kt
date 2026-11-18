@@ -61,6 +61,14 @@ data class TemplateEntity(
     val styleJson: String
 )
 
+@Entity(tableName = "editor_projects")
+data class EditorProjectEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val json: String,
+    val updatedAt: Long
+)
+
 data class LibraryStats(val count: Int, val duplicates: Int, val totalSize: Long, val totalDuration: Double)
 
 @Dao
@@ -147,17 +155,40 @@ interface AppDao {
 
     @Query("DELETE FROM text_templates WHERE id = :id")
     suspend fun deleteTemplate(id: Long)
+
+    // ---- proyectos del editor de video
+    @Query("SELECT * FROM editor_projects ORDER BY updatedAt DESC")
+    fun editorProjects(): Flow<List<EditorProjectEntity>>
+
+    @Query("SELECT * FROM editor_projects ORDER BY updatedAt DESC LIMIT 1")
+    suspend fun lastEditorProject(): EditorProjectEntity?
+
+    @Query("SELECT * FROM editor_projects WHERE id = :id")
+    suspend fun editorProject(id: Long): EditorProjectEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertEditorProject(p: EditorProjectEntity): Long
+
+    @Query("DELETE FROM editor_projects WHERE id = :id")
+    suspend fun deleteEditorProject(id: Long)
 }
 
 @Database(
-    entities = [VideoEntity::class, UsedSegmentEntity::class, ProjectEntity::class, OutputEntity::class, TemplateEntity::class],
-    version = 1, exportSchema = false
+    entities = [VideoEntity::class, UsedSegmentEntity::class, ProjectEntity::class, OutputEntity::class, TemplateEntity::class, EditorProjectEntity::class],
+    version = 2, exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun dao(): AppDao
 
     companion object {
+        /** v1 → v2: tabla de proyectos del editor. Conserva la biblioteca, proyectos y videos generados. */
+        val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `editor_projects` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `json` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL)")
+            }
+        }
+
         fun create(ctx: Context): AppDatabase =
-            Room.databaseBuilder(ctx, AppDatabase::class.java, "clipforge.db").build()
+            Room.databaseBuilder(ctx, AppDatabase::class.java, "clipforge.db").addMigrations(MIGRATION_1_2).build()
     }
 }

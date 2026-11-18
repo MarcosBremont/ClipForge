@@ -251,11 +251,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             val byId = dao.videosByIds(plans.flatMap { p -> p.segments.map { it.videoId } }.distinct()).associateBy { it.id }
             val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val items = plans.mapIndexed { i, plan ->
+            val specs = plans.mapIndexed { i, plan ->
                 val clips = plan.segments.mapNotNull { s -> byId[s.videoId]?.let { ExportClip(it.uri, (s.start * 1000).toLong(), (s.duration * 1000).toLong()) } }
-                ExportItem(ExportSpec("ClipForge_${stamp}_v${i + 1}", clips, d.text, d.style, d.settings), plan.segments)
+                ExportSpec("ClipForge_${stamp}_v${i + 1}", clips, d.text, d.style, d.settings) to plan.segments
             }
-            if (items.any { it.spec.clips.size != it.segments.size }) { say("Faltan videos de la selección en la biblioteca."); return@launch }
+            if (specs.any { (sp, segs) -> sp.clips.size != segs.size }) { say("Faltan videos de la selección en la biblioteca."); return@launch }
+            val items = specs.map { (sp, segs) -> ExportItem(sp.name, totalDuration(segs), segs) { ex, out, prog -> ex.render(sp, out, prog) } }
             ExportService.start(getApplication(), ExportBatch(d.projectId, items))
             onStarted()
         } catch (e: Exception) { say("No se pudo iniciar la exportación: ${e.message}") } finally { busy.value = null }

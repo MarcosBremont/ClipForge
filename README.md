@@ -13,6 +13,7 @@ Aplicación de escritorio para **Windows 10/11 y macOS** que crea videos 9:16 (1
 | Biblioteca | Importar carpetas (recursivo), archivos sueltos, arrastrar y soltar, discos externos, carpetas de Drive/Dropbox/OneDrive sincronizadas y enlaces directos a archivos de video. Miniaturas, duración, resolución, formato, tamaño. Detección de duplicados (huella rápida por contenido). Verificación de archivos desconectados. Biblioteca persistente entre sesiones. Importación en segundo plano con progreso y cancelación. |
 | Crear video | Texto, duración (10–60 s), modo automático o manual (nº de fragmentos, duración de cada uno, velocidad de cortes), 30/60 fps, calidad, audio original on/off, música de fondo, marca de agua propia, varias versiones. |
 | Selección | Elige videos distintos, fragmentos repartidos por **todo** el video (no solo el inicio), sin solapes, evitando lo ya usado en proyectos anteriores y en el mismo lote. Opcional: ajuste a cambios de escena (detección local con FFmpeg) y priorización por puntuaciones de IA. |
+| Editor de video | Línea de tiempo como CapCut: agrega videos de la biblioteca, **divide**, **recorta arrastrando los bordes**, reordena arrastrando, duplica y borra clips; **velocidad** (0,25×–4×) y **volumen** por clip; **textos** con tiempo propio (aparecen y desaparecen donde tú quieras, varios a la vez) que **se arrastran sobre la vista previa**; música; deshacer/rehacer; zoom; guardado automático y proyectos del editor. Atajos: Espacio, S, T, Supr, Ctrl+D, Ctrl+Z/Y. También puedes abrir en el editor cualquier video creado automáticamente para ajustarlo a mano. |
 | Previsualización | Reproductor con línea de tiempo, play/pausa, ±1 s, saltar fragmentos, ver cada fragmento, cambiar por otro (aleatorio o elegido de la biblioteca), eliminar, agregar, reordenar, «Volver a generar selección». |
 | Texto | Editor en tiempo real: tipografía, tamaño, grosor, color, posición, alineación, sombra, contorno, mayúsculas, tiempo de aparición. Plantillas guardables. La vista previa y la exportación usan el mismo dibujado, así que lo que ves es lo que se exporta. |
 | Lotes | N versiones distintas por proyecto. Registro de combinaciones para no repetir. |
@@ -74,8 +75,8 @@ Prueba local del flujo sin GitHub: `npm run dist:win && node tests/update-e2e.mj
 
 ```bash
 npm run typecheck
-npm test          # motor: planificador + render real con FFmpeg (16 pruebas)
-npm run build && npm run test:e2e   # app completa en Electron (17 comprobaciones)
+npm test          # motor + editor: planificador, modelo de línea de tiempo y render real con FFmpeg (39 pruebas)
+npm run build && npm run test:e2e   # app completa en Electron (33 comprobaciones, incluido el editor con gestos de ratón)
 ```
 
 La prueba e2e genera videos de muestra, importa una carpeta anidada, comprueba duplicados, previsualiza, exporta 3 versiones, verifica con ffprobe (1080×1920, H.264, AAC, duración exacta), guarda/recupera un proyecto y toma capturas de la interfaz.
@@ -90,15 +91,17 @@ src/
     library.ts   importación recursiva, huella de duplicados, descarga de enlaces
     ffmpeg.ts    rutas de ffmpeg/ffprobe, sondeo, miniaturas, detección de escenas
     render.ts    construcción del filtergraph y exportación (+ proxies de previsualización)
+    editorRender.ts  exportación del editor de línea de tiempo (velocidad, volumen, textos con tiempo, música)
     ai.ts        proveedores de IA (Gemini, OpenRouter, Grok, Qwen, Claude) y claves cifradas
     jobs.ts      tareas en segundo plano, progreso y cancelación
     e2e.ts       prueba de integración (solo con CLIPFORGE_E2E)
   shared/      Código común
     planner.ts   selección de fragmentos (pura y probada)
+    editor.ts    modelo del editor de línea de tiempo (cortar, recortar, mover… puro y probado)
     types.ts     tipos y valores por defecto
   preload/     Puente seguro (contextIsolation) entre interfaz y proceso principal
   renderer/    Interfaz React + TypeScript + Zustand
-tests/         Pruebas del motor y e2e
+tests/         Pruebas del motor, del editor y e2e
 ```
 
 **Cómo se genera un video:** `planner.ts` decide fragmentos (video, inicio, duración). La interfaz dibuja el texto en un PNG transparente de 1080×1920 con un canvas. `render.ts` lanza **una sola** llamada a FFmpeg: cada fragmento se busca con `-ss`, se escala/recorta a 1080×1920, se concatena, se superpone el PNG (y la marca de agua), se mezcla audio original/música y se codifica a H.264 + AAC. Los datos se guardan en SQLite (`clipforge.db` en la carpeta de datos del usuario: `%APPDATA%/ClipForge` o `~/Library/Application Support/ClipForge`).

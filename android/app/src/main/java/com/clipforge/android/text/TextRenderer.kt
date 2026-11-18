@@ -88,6 +88,23 @@ object TextRenderer {
         canvas.restore()
     }
 
+    /** Recuadro (coordenadas del lienzo 1080×1920) que ocupa un texto: sirve para seleccionarlo y arrastrarlo en la vista previa. */
+    fun measureBox(text: String, st: TextStyle): android.graphics.RectF {
+        val content = if (st.uppercase) text.uppercase() else text
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = typeface(st); textSize = st.fontSize }
+        val maxW = st.maxWidth * W
+        val lines = wrap(paint, if (content.isBlank()) " " else content, maxW)
+        val lh = st.fontSize * st.lineHeight
+        val blockH = lh * lines.size
+        val w = max(40f, lines.maxOf { paint.measureText(it) })
+        val cx = st.x * W
+        val anchorX = when (st.align) { "center" -> cx; "left" -> cx - maxW / 2; else -> cx + maxW / 2 }
+        val left = when (st.align) { "center" -> anchorX - w / 2; "left" -> anchorX; else -> anchorX - w }
+        val pad = (if (st.outline) st.outlineWidth else 0f) + 10f
+        val top = st.y * H - blockH / 2 - pad
+        return android.graphics.RectF(left - pad, top, left - pad + w + 2 * pad, top + blockH + 2 * pad)
+    }
+
     /** Marca de agua propia del usuario (esquina inferior derecha). */
     fun drawWatermark(canvas: Canvas, text: String, scale: Float) {
         if (text.isBlank()) return
